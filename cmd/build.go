@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"alif-cli/internal/builder"
+	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 	"alif-cli/internal/project"
 	"alif-cli/internal/signer"
@@ -35,21 +36,21 @@ func runBuild() {
 	// 1. Validate Project
 	projDir, err := project.IsProjectRoot("") // check CWD
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		color.Error("Error: %v", err)
 		os.Exit(1)
 	}
 
 	cfg, _ := config.LoadConfig()
 	if cfg == nil || cfg.AlifToolsPath == "" {
-		fmt.Println("Error: Alif CLI not configured. Run 'alif setup' first.")
+		color.Error("Error: Alif CLI not configured. Run 'alif setup' first.")
 		os.Exit(1)
 	}
 
 	// 2. Build
-	fmt.Printf("Building project in %s for target %s...\n", projDir, buildTarget)
+	color.Info("Building project in %s for target %s...", projDir, buildTarget)
 	b := builder.New(cfg)
 	if err := b.Build(projDir, buildTarget); err != nil {
-		fmt.Printf("Build failed: %v\n", err)
+		color.Error("Build failed: %v", err)
 		os.Exit(1)
 	}
 
@@ -65,10 +66,10 @@ func runBuild() {
 	fmt.Printf("Using solution: %s\n", solFile)
 	binPath := findRecentBin(projDir)
 	if binPath == "" {
-		fmt.Println("Error: Could not locate built binary in out/ directory.")
+		color.Error("Error: Could not locate built binary in out/ directory.")
 		os.Exit(1)
 	}
-	fmt.Printf("Found binary: %s\n", binPath)
+	color.Info("Found binary: %s", binPath)
 
 	// 4. Sign
 	// Prepare In-Place Build Dir
@@ -85,11 +86,11 @@ func runBuild() {
 	var errSign error
 	_, errSign = s.SignArtifact(projDir, signBuildDir, binPath, buildTarget)
 	if errSign != nil {
-		fmt.Printf("Signing failed: %v\n", errSign)
+		color.Error("Signing failed: %v", errSign)
 		os.Exit(1)
 	}
-	fmt.Printf("Signed artifact created: %s\n", tocPath)
-	fmt.Println("Build completed successfully.")
+	color.Success("Signed artifact created: %s", tocPath)
+	color.Success("Build completed successfully.")
 }
 
 func findRecentBin(root string) string {

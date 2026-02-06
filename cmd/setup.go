@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 
 	"github.com/spf13/cobra"
@@ -72,11 +73,14 @@ func runSetup() {
 
 	// Save
 	if err := config.SaveConfig(cfg); err != nil {
-		fmt.Printf("Error saving config: %v\n", err)
+		color.Error("Error saving config: %v", err)
 	} else {
-		fmt.Println("Configuration saved successfully!")
-		fmt.Printf("Toolkit: %s\nCMSIS: %s\nGCC: %s\nPacks: %s\nKeys: %s\n",
-			cfg.AlifToolsPath, cfg.CmsisToolbox, cfg.GccToolchain, cfg.CmsisPackRoot, cfg.SigningKeyPath)
+		color.Success("Configuration saved successfully!")
+		color.Info("Toolkit: %s", cfg.AlifToolsPath)
+		color.Info("CMSIS: %s", cfg.CmsisToolbox)
+		color.Info("GCC: %s", cfg.GccToolchain)
+		color.Info("Packs: %s", cfg.CmsisPackRoot)
+		color.Info("Keys: %s", cfg.SigningKeyPath)
 	}
 }
 

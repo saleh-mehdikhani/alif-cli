@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 
 	"go.bug.st/serial/enumerator"
@@ -70,7 +71,7 @@ func (f *Flasher) Flash(binPath, tocPath, port string) error {
 	buildDir := filepath.Dir(binPath)
 
 	// Simple staging: Copy to toolkit in expected locations
-	fmt.Println("Staging files for flasher tool...")
+	color.Info("Staging files for flasher tool...")
 
 	// 1. Stage Image in toolkit/build/images
 	imagesDir := filepath.Join(f.Cfg.AlifToolsPath, "build", "images")
@@ -96,13 +97,13 @@ func (f *Flasher) Flash(binPath, tocPath, port string) error {
 	}
 
 	// 3. Run tool from toolkit ROOT
-	fmt.Printf("Flashing from %s to port %s...\n", buildDir, port)
+	color.Info("Flashing from %s to port %s...", buildDir, port)
 	cmd := exec.Command(filepath.Join(f.Cfg.AlifToolsPath, "app-write-mram"))
 	cmd.Dir = f.Cfg.AlifToolsPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	fmt.Println("Starting execution...")
+	color.Info("Starting execution...")
 	return cmd.Run()
 }
 
