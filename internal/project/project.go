@@ -4,11 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// IsProjectRoot checks if the given directory (or current dir if empty)
-// looks like a valid Alif project (CMSIS csolution based).
-func IsProjectRoot(dir string) (string, error) {
+// IsSolutionRoot checks if the given directory (or current dir if empty)
+// looks like a valid Alif solution (CMSIS csolution based).
+func IsSolutionRoot(dir string) (string, error) {
 	if dir == "" {
 		var err error
 		dir, err = os.Getwd()
@@ -17,22 +18,24 @@ func IsProjectRoot(dir string) (string, error) {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
+	// Make absolute path
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+
+	entries, err := os.ReadDir(absDir)
 	if err != nil {
 		return "", err
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yml" {
-			// Basic check for .csolution.yml or similar
-			// You could parse file content to be stricter
-			if len(entry.Name()) > 10 { // simplistic check
-				return dir, nil
-			}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".csolution.yml") {
+			return absDir, nil
 		}
 	}
 
-	return "", errors.New("no project found in this directory (looking for *.yml solution files)")
+	return "", errors.New("no .csolution.yml file found in this directory")
 }
 
 // FindCsolution finds the .csolution.yml file in the directory

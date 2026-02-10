@@ -14,11 +14,17 @@ import (
 )
 
 var flashCmd = &cobra.Command{
-	Use:   "flash",
+	Use:   "flash [solution_path]",
 	Short: "Flash the last built binary",
-	Long:  `Flashes the signed binary from the last successful build to the connected Alif board.`,
+	Long: `Flashes the signed binary from the last successful build to the connected Alif board.
+	
+If solution_path is not specified, uses the current directory.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		runFlash()
+		solutionPath := ""
+		if len(args) > 0 {
+			solutionPath = args[0]
+		}
+		runFlash(solutionPath)
 	},
 }
 
@@ -26,16 +32,16 @@ func init() {
 	rootCmd.AddCommand(flashCmd)
 }
 
-func runFlash() {
+func runFlash(solutionPath string) {
 	// 1. Validate Context
-	projDir, err := project.IsProjectRoot("")
+	solDir, err := project.IsSolutionRoot(solutionPath)
 	if err != nil {
 		color.Error("Error: %v", err)
 		os.Exit(1)
 	}
 
 	// 2. Load State
-	stateFile := filepath.Join(projDir, ".alif_build_state")
+	stateFile := filepath.Join(solDir, ".alif_build_state")
 	content, err := os.ReadFile(stateFile)
 	if err != nil {
 		color.Error("Error: No build state found. Run 'alif build' first.")

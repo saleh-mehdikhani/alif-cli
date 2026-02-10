@@ -19,12 +19,7 @@ func New(cfg *config.Config) *Builder {
 	return &Builder{Cfg: cfg}
 }
 
-func (b *Builder) Build(projectPath, target string) error {
-	// Construct the context string, e.g., "blinky.debug+E7-HE"
-	// For simplicity, we assume project name is "blinky" or "hello" etc.
-	// In a real scenario we'd parse the YAML to find valid contexts.
-	// Here we try to accept exact context or try to be smart.
-
+func (b *Builder) Build(solutionPath, target, projectName string) error {
 	// Validating inputs
 	if target == "" {
 		return fmt.Errorf("target is required (e.g., E7-HE)")
@@ -48,28 +43,17 @@ func (b *Builder) Build(projectPath, target string) error {
 	newPath := strings.Join(pathComponents, pathSep)
 
 	env = append(env, "PATH="+newPath)
-	env = append(env, "GCC_TOOLCHAIN_13_2_1="+b.Cfg.GccToolchain) // Used by some cbuild templates
+	env = append(env, "GCC_TOOLCHAIN_13_2_1="+b.Cfg.GccToolchain)
 	env = append(env, "CMSIS_PACK_ROOT="+b.Cfg.CmsisPackRoot)
 
-	// Command: cbuild <file> --context <context> --packs
-	// If the user gives just "E7-HE", we might not know the project name part (e.g. "blinky").
-	// We will try to find a matching context via 'cbuild list contexts' optionally,
-	// OR we assume the user might pass "blinky.debug+E7-HE".
-	//
-	// Let's rely on cbuild's behavior or ask user for full context if needed.
-	// BUT per requirements "alif build -b <target>" -> likely implies strict "Target Type".
-	// cbuild allows filtering.
-
-	// Heuristic: If target has no ".", assume it is just the Board/Processor part, e.g. "E7-HE".
-	// We will list contexts and pick the one that ends with "+<target>".
-
-	solutionFile, _ := filepath.Glob(filepath.Join(projectPath, "*.csolution.yml"))
+	// Find solution file
+	solutionFile, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
 	if len(solutionFile) == 0 {
-		return fmt.Errorf("no solution file found")
+		return fmt.Errorf("no .csolution.yml file found")
 	}
 	sol := solutionFile[0]
 
-	selectedContext, err := b.resolveContext(sol, target, env)
+	selectedContext, err := b.resolveContext(sol, target, projectName, env)
 	if err != nil {
 		return err
 	}
@@ -78,20 +62,20 @@ func (b *Builder) Build(projectPath, target string) error {
 
 	cmd := exec.Command("cbuild", sol, "--context", selectedContext, "--packs")
 	cmd.Env = env
-	cmd.Dir = projectPath
+	cmd.Dir = solutionPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
 }
 
-func (b *Builder) resolveContext(sol, target string, env []string) (string, error) {
+func (b *Builder) resolveContext(sol, target, projectName string, env []string) (string, error) {
 	// If target looks like a full context, return it
 	if strings.Contains(target, ".") && strings.Contains(target, "+") {
 		return target, nil
 	}
 
-	// Otherwise list contexts and match
+	// List contexts and match
 	cmd := exec.Command("cbuild", "list", "contexts", sol)
 	cmd.Env = env
 	out, err := cmd.Output()
@@ -108,6 +92,15 @@ func (b *Builder) resolveContext(sol, target string, env []string) (string, erro
 		}
 		// check if it ends with +TARGET or contains +TARGET
 		if strings.HasSuffix(line, "+"+target) {
+			// If projectName is specified, filtering
+			if projectName != "" {
+				// Context format is typically: project.build-type+target
+				// Check if it starts with the project name
+				if !strings.HasPrefix(line, projectName+".") {
+					continue
+				}
+			}
+
 			// prefer debug builds for development
 			if strings.Contains(line, ".debug") {
 				candidates = append([]string{line}, candidates...) // push to front
@@ -118,6 +111,9 @@ func (b *Builder) resolveContext(sol, target string, env []string) (string, erro
 	}
 
 	if len(candidates) == 0 {
+		if projectName != "" {
+			return "", fmt.Errorf("no build context found matching project '%s' and target '%s'", projectName, target)
+		}
 		return "", fmt.Errorf("no build context found matching target '%s'", target)
 	}
 
@@ -126,7 +122,6 @@ func (b *Builder) resolveContext(sol, target string, env []string) (string, erro
 }
 
 // GetArtifactPath returns the expected location of the elf/bin after build
-// This logic duplicates some of cbuild's internal logic, but is necessary to find the file to sign.
 func (b *Builder) GetArtifactPath(projectPath, fullContext string) string {
 	// Standard CMSIS layout: out/<project>/<target>/<build-type>/<project>.elf
 	// context: project.build-type+target

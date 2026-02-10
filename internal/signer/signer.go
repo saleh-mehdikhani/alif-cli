@@ -25,7 +25,15 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCor
 
 	srcCfg := filepath.Join(projectDir, ".alif", cfgName)
 	if _, err := os.Stat(srcCfg); os.IsNotExist(err) {
-		return "", fmt.Errorf("signing config %s not found in .alif/ directory", cfgName)
+		// Fallback to global presets
+		home, _ := os.UserHomeDir()
+		fallbackCfg := filepath.Join(home, ".alif", "presets", "signing", cfgName)
+		if _, err := os.Stat(fallbackCfg); err == nil {
+			fmt.Printf("Using global signing preset: %s\n", fallbackCfg)
+			srcCfg = fallbackCfg
+		} else {
+			return "", fmt.Errorf("signing config %s not found in .alif/ directory or ~/.alif/presets/signing", cfgName)
+		}
 	}
 
 	// 1. Stage Config in toolkit ROOT
