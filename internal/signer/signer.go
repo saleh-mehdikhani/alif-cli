@@ -1,14 +1,15 @@
 package signer
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"alif-cli/internal/config"
+	"alif-cli/internal/project"
 )
 
 type Signer struct {
@@ -19,40 +20,77 @@ func New(cfg *config.Config) *Signer {
 	return &Signer{Cfg: cfg}
 }
 
-func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCore string) (string, error) {
+func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCore string, configPathOverride string) (string, error) {
 	fmt.Println("DEBUG: Entering SignArtifact")
-	cfgName := fmt.Sprintf("%s_cfg.json", getCoreName(targetCore))
 
-	srcCfg := filepath.Join(projectDir, ".alif", cfgName)
-	if _, err := os.Stat(srcCfg); os.IsNotExist(err) {
-		// Fallback to global presets
-		home, _ := os.UserHomeDir()
-		fallbackCfg := filepath.Join(home, ".alif", "presets", "signing", cfgName)
-		if _, err := os.Stat(fallbackCfg); err == nil {
-			fmt.Printf("Using global signing preset: %s\n", fallbackCfg)
-			srcCfg = fallbackCfg
-		} else {
-			return "", fmt.Errorf("signing config %s not found in .alif/ directory or ~/.alif/presets/signing", cfgName)
+	var srcCfg string
+	if configPathOverride != "" {
+		srcCfg = configPathOverride
+		if _, err := os.Stat(srcCfg); err != nil {
+			return "", fmt.Errorf("provided config file not found: %s", srcCfg)
+		}
+		// Convert to absolute path
+		var err error
+		srcCfg, err = filepath.Abs(srcCfg)
+		if err != nil {
+			return "", fmt.Errorf("failed to get absolute path for config: %w", err)
+		}
+		fmt.Printf("Using provided signing config: %s\n", srcCfg)
+	} else {
+		// Standard Lookup
+		cfgName := fmt.Sprintf("%s_cfg.json", project.GetCoreName(targetCore))
+		srcCfg = filepath.Join(projectDir, ".alif", cfgName)
+
+		if _, err := os.Stat(srcCfg); os.IsNotExist(err) {
+			return "", fmt.Errorf("signing config %s not found in .alif/ directory (presets removed, please provide local config)", cfgName)
 		}
 	}
 
-	// 1. Stage Config in toolkit ROOT
-	toolkitCfg := filepath.Join(s.Cfg.AlifToolsPath, "alif-img.json")
-	_ = os.Remove(toolkitCfg)
-	if err := copyFile(srcCfg, toolkitCfg); err != nil {
-		return "", fmt.Errorf("failed to stage config: %w", err)
+	// 1. Load Config
+	cfgBytes, err := os.ReadFile(srcCfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to read signing config: %w", err)
 	}
-	defer os.Remove(toolkitCfg)
 
-	// 2. Stage Binary in toolkit ROOT
-	toolkitBin := filepath.Join(s.Cfg.AlifToolsPath, "alif-img.bin")
-	_ = os.Remove(toolkitBin)
-	_ = copyFile(binaryPath, toolkitBin) // Copy instead of symlink to be safe
-	defer os.Remove(toolkitBin)
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
+		return "", fmt.Errorf("failed to parse signing config: %w", err)
+	}
 
-	// 3. Run tool from ROOT
+	// 2. Find the binary path in config and copy binary to that location
+	var binaryPathInConfig string
+	for _, v := range cfg {
+		if sub, ok := v.(map[string]interface{}); ok {
+			if binPath, exists := sub["binary"]; exists {
+				if binPathStr, ok := binPath.(string); ok {
+					binaryPathInConfig = binPathStr
+					break
+				}
+			}
+		}
+	}
+
+	if binaryPathInConfig == "" {
+		return "", fmt.Errorf("could not find 'binary' field in config")
+	}
+
+	// Copy binary to the path specified in config (relative to toolkit directory)
+	toolkitBinPath := filepath.Join(s.Cfg.AlifToolsPath, binaryPathInConfig)
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(toolkitBinPath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory for binary: %w", err)
+	}
+
+	_ = os.Remove(toolkitBinPath)
+	if err := copyFile(binaryPath, toolkitBinPath); err != nil {
+		return "", fmt.Errorf("failed to copy binary: %w", err)
+	}
+	// Don't remove the binary - app-write-mram needs it at this exact path
+
+	// 3. Run tool from ROOT with original config (no patching needed)
 	toolPath := filepath.Join(s.Cfg.AlifToolsPath, "app-gen-toc")
-	cmd := exec.Command(toolPath, "-f", "alif-img.json", "-o", "AppTocPackage.bin")
+	cmd := exec.Command(toolPath, "-f", srcCfg, "-o", "build/AppTocPackage.bin")
 	cmd.Dir = s.Cfg.AlifToolsPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -65,15 +103,13 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCor
 	// 4. Retrieve ALL generated artifacts back to Project buildDir
 	fmt.Println("Retrieving all generated artifacts...")
 
-	imagesDir := filepath.Join(s.Cfg.AlifToolsPath, "build", "images")
-
 	artifacts := []struct{ src, dst string }{
-		{filepath.Join(s.Cfg.AlifToolsPath, "AppTocPackage.bin"), filepath.Join(buildDir, "AppTocPackage.bin")},
-		{filepath.Join(s.Cfg.AlifToolsPath, "AppTocPackage.bin.sign"), filepath.Join(buildDir, "AppTocPackage.bin.sign")},
-		{filepath.Join(s.Cfg.AlifToolsPath, "AppTocPackage.bin.crt"), filepath.Join(buildDir, "AppTocPackage.bin.crt")},
-		{filepath.Join(imagesDir, "alif-img.bin.sign"), filepath.Join(buildDir, "alif-img.bin.sign")},
-		{filepath.Join(imagesDir, "alif-img.bin.crt"), filepath.Join(buildDir, "alif-img.bin.crt")},
-		{toolkitBin, filepath.Join(buildDir, "alif-img.bin")},
+		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin"), filepath.Join(buildDir, "AppTocPackage.bin")},
+		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin.sign"), filepath.Join(buildDir, "AppTocPackage.bin.sign")},
+		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin.crt"), filepath.Join(buildDir, "AppTocPackage.bin.crt")},
+		{toolkitBinPath + ".sign", filepath.Join(buildDir, "alif-img.bin.sign")},
+		{toolkitBinPath + ".crt", filepath.Join(buildDir, "alif-img.bin.crt")},
+		{toolkitBinPath, filepath.Join(buildDir, "alif-img.bin")},
 	}
 
 	for _, a := range artifacts {
@@ -102,14 +138,4 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
-}
-
-func getCoreName(target string) string {
-	if strings.Contains(target, "HE") {
-		return "M55_HE"
-	}
-	if strings.Contains(target, "HP") {
-		return "M55_HP"
-	}
-	return "M55_HE"
 }

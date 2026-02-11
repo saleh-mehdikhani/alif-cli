@@ -16,6 +16,7 @@ var rootCmd = &cobra.Command{
 	Long: `Alif CLI helps you build, sign, and flash applications for Alif AK-E7-AIML 
 and other Alif boards with ease. It manages toolchains and signing keys 
 to simplify your workflow.`,
+	Version: "0.2.0",
 }
 
 func Execute() {

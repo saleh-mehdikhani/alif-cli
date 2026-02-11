@@ -38,6 +38,18 @@ func IsSolutionRoot(dir string) (string, error) {
 	return "", errors.New("no .csolution.yml file found in this directory")
 }
 
+// GetCoreName maps a target string (e.g. E7-HE) to the core name (M55_HE).
+func GetCoreName(target string) string {
+	if strings.Contains(strings.ToUpper(target), "HE") {
+		return "M55_HE"
+	}
+	if strings.Contains(strings.ToUpper(target), "HP") {
+		return "M55_HP"
+	}
+	// Default to HE
+	return "M55_HE"
+}
+
 // FindCsolution finds the .csolution.yml file in the directory
 func FindCsolution(dir string) (string, error) {
 	if dir == "" {

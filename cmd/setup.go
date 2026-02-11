@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"alif-cli/internal/assets"
 	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 
@@ -72,15 +71,6 @@ func runSetup() {
 		cfg.SigningKeyPath = filepath.Join(cfg.AlifToolsPath, "cert")
 	}
 
-	// 6. Extract Presets (Portable Signing Configs)
-	home, _ := os.UserHomeDir()
-	presetsDir := filepath.Join(home, ".alif", "presets")
-	if err := assets.Extract(presetsDir); err != nil {
-		color.Error("Warning: Failed to extract presets: %v", err)
-	} else {
-		// color.Success("Presets extracted to %s", presetsDir)
-	}
-
 	// Save
 	if err := config.SaveConfig(cfg); err != nil {
 		color.Error("Error saving config: %v", err)
@@ -91,7 +81,6 @@ func runSetup() {
 		color.Info("GCC: %s", cfg.GccToolchain)
 		color.Info("Packs: %s", cfg.CmsisPackRoot)
 		color.Info("Keys: %s", cfg.SigningKeyPath)
-		color.Info("Presets: %s", presetsDir)
 	}
 }
 

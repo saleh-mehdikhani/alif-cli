@@ -92,12 +92,12 @@ func runBuild(solutionPath string) {
 
 	// 5. Persist State (Optimistic - before signing because app-gen-toc crashes parent process on success)
 	fmt.Println("Saving build state (optimistic)...")
-	saveBuildState(solDir, binPath, tocPath)
+	saveBuildState(solDir, binPath, tocPath, buildTarget)
 
 	// We ignore return path from SignArtifact as we pre-calculated it
 	s := signer.New(cfg)
 	var errSign error
-	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, buildTarget)
+	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, buildTarget, "")
 	if errSign != nil {
 		color.Error("Signing failed: %v", errSign)
 		os.Exit(1)
@@ -125,7 +125,7 @@ func findRecentBin(root string) string {
 	return recent
 }
 
-func saveBuildState(root, bin, toc string) {
-	content := fmt.Sprintf("%s\n%s", bin, toc)
+func saveBuildState(root, bin, toc, target string) {
+	content := fmt.Sprintf("%s\n%s\n%s", bin, toc, target)
 	_ = os.WriteFile(filepath.Join(root, ".alif_build_state"), []byte(content), 0644)
 }
