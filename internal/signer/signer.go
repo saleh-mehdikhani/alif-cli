@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"alif-cli/internal/config"
-	"alif-cli/internal/project"
+	"alif-cli/internal/targets"
 )
 
 type Signer struct {
@@ -21,32 +21,15 @@ func New(cfg *config.Config) *Signer {
 }
 
 func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCore string, configPathOverride string) (string, error) {
-	fmt.Println("DEBUG: Entering SignArtifact")
+	// targetCore is deprecated/unused for lookup now, relying on config
 
-	var srcCfg string
-	if configPathOverride != "" {
-		srcCfg = configPathOverride
-		if _, err := os.Stat(srcCfg); err != nil {
-			return "", fmt.Errorf("provided config file not found: %s", srcCfg)
-		}
-		// Convert to absolute path
-		var err error
-		srcCfg, err = filepath.Abs(srcCfg)
-		if err != nil {
-			return "", fmt.Errorf("failed to get absolute path for config: %w", err)
-		}
-		fmt.Printf("Using provided signing config: %s\n", srcCfg)
-	} else {
-		// Standard Lookup
-		cfgName := fmt.Sprintf("%s_cfg.json", project.GetCoreName(targetCore))
-		srcCfg = filepath.Join(projectDir, ".alif", cfgName)
-
-		if _, err := os.Stat(srcCfg); os.IsNotExist(err) {
-			return "", fmt.Errorf("signing config %s not found in .alif/ directory (presets removed, please provide local config)", cfgName)
-		}
+	// Use ResolveTargetConfig to find the config file
+	_, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve signing config: %w", err)
 	}
 
-	// 1. Load Config
+	// 1. Load Config (to find 'binary' path mapping)
 	cfgBytes, err := os.ReadFile(srcCfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to read signing config: %w", err)

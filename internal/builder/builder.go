@@ -1,11 +1,13 @@
 package builder
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"alif-cli/internal/config"
@@ -19,12 +21,7 @@ func New(cfg *config.Config) *Builder {
 	return &Builder{Cfg: cfg}
 }
 
-func (b *Builder) Build(solutionPath, target, projectName string) error {
-	// Validating inputs
-	if target == "" {
-		return fmt.Errorf("target is required (e.g., E7-HE)")
-	}
-
+func (b *Builder) Build(solutionPath, target, projectName string) (string, error) {
 	// Setup Environment
 	env := os.Environ()
 
@@ -49,36 +46,14 @@ func (b *Builder) Build(solutionPath, target, projectName string) error {
 	// Find solution file
 	solutionFile, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
 	if len(solutionFile) == 0 {
-		return fmt.Errorf("no .csolution.yml file found")
+		return "", fmt.Errorf("no .csolution.yml file found")
 	}
 	sol := solutionFile[0]
 
-	selectedContext, err := b.resolveContext(sol, target, projectName, env)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Building context: %s\n", selectedContext)
-
-	cmd := exec.Command("cbuild", sol, "--context", selectedContext, "--packs")
-	cmd.Env = env
-	cmd.Dir = solutionPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-func (b *Builder) resolveContext(sol, target, projectName string, env []string) (string, error) {
-	// If target looks like a full context, return it
-	if strings.Contains(target, ".") && strings.Contains(target, "+") {
-		return target, nil
-	}
-
-	// List contexts and match
-	cmd := exec.Command("cbuild", "list", "contexts", sol)
-	cmd.Env = env
-	out, err := cmd.Output()
+	// List available contexts
+	cmdList := exec.Command("cbuild", "list", "contexts", sol)
+	cmdList.Env = env
+	out, err := cmdList.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to list contexts: %w", err)
 	}
@@ -90,35 +65,52 @@ func (b *Builder) resolveContext(sol, target, projectName string, env []string) 
 		if line == "" {
 			continue
 		}
-		// check if it ends with +TARGET or contains +TARGET
-		if strings.HasSuffix(line, "+"+target) {
-			// If projectName is specified, filtering
-			if projectName != "" {
-				// Context format is typically: project.build-type+target
-				// Check if it starts with the project name
-				if !strings.HasPrefix(line, projectName+".") {
-					continue
-				}
-			}
-
-			// prefer debug builds for development
-			if strings.Contains(line, ".debug") {
-				candidates = append([]string{line}, candidates...) // push to front
-			} else {
-				candidates = append(candidates, line)
-			}
+		// Filter by target if provided
+		if target != "" && !strings.HasSuffix(line, "+"+target) {
+			continue
 		}
+		// Filter by project if provided (supports partial match e.g. "hello", "hello.debug", "hello.debug+E7-HE")
+		if projectName != "" && !strings.HasPrefix(line, projectName) {
+			continue
+		}
+		candidates = append(candidates, line)
 	}
 
 	if len(candidates) == 0 {
-		if projectName != "" {
-			return "", fmt.Errorf("no build context found matching project '%s' and target '%s'", projectName, target)
-		}
-		return "", fmt.Errorf("no build context found matching target '%s'", target)
+		return "", fmt.Errorf("no matching build contexts found for target='%s' project='%s'", target, projectName)
 	}
 
-	// Default to first candidate (debug preferred)
-	return candidates[0], nil
+	var selectedContext string
+	if len(candidates) == 1 {
+		selectedContext = candidates[0]
+	} else {
+		fmt.Println("Multiple build contexts found:")
+		for i, c := range candidates {
+			fmt.Printf("[%d] %s\n", i+1, c)
+		}
+		fmt.Print("Select context to build (enter number): ")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		selection, err := strconv.Atoi(strings.TrimSpace(input))
+		if err != nil || selection < 1 || selection > len(candidates) {
+			return "", fmt.Errorf("invalid selection")
+		}
+		selectedContext = candidates[selection-1]
+	}
+
+	fmt.Printf("Building context: %s\n", selectedContext)
+
+	cmd := exec.Command("cbuild", sol, "--context", selectedContext, "--packs")
+	cmd.Env = env
+	cmd.Dir = solutionPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	return selectedContext, nil
 }
 
 // GetArtifactPath returns the expected location of the elf/bin after build

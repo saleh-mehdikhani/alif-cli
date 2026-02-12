@@ -147,7 +147,7 @@ func runSign(binPath string) {
 		updated = true
 	} else {
 		// Fallback: iterate and find one with cpu_id?
-		for k, v := range cfgMap {
+		for _, v := range cfgMap {
 			if sub, ok := v.(map[string]interface{}); ok {
 				if _, ok := sub["cpu_id"]; ok {
 					sub["binary"] = fmt.Sprintf("build/images/%s", binBaseName)
