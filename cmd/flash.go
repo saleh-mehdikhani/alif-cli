@@ -12,13 +12,12 @@ import (
 	"alif-cli/internal/config"
 	"alif-cli/internal/flasher"
 	"alif-cli/internal/project"
-	"alif-cli/internal/signer"
+	"alif-cli/internal/targets"
 
 	"github.com/spf13/cobra"
 )
 
 // Variables for flags
-var flashTarget string
 var flashConfig string
 var flashSlow bool
 var flashMethod string
@@ -32,13 +31,13 @@ var flashCmd = &cobra.Command{
 
 Modes:
 1. Solution Mode (Default):
-   alif flash [solution_path]
-   Flashes the last built artifact from the solution.
+   alif flash [solution_path or solution_directory]
+   Flashes the last built artifact from the solution found.
 
 2. Binary Mode:
-   alif flash myapp.bin -b E7-HE [-c config.json]
-   Signs and flashes the provided binary. Requires -b to specify target/preset.
-   Optionally provide -c to use a specific signing configuration (defining MRAM address).
+   alif flash myapp.bin [-c config.json]
+   Signs and flashes the provided binary. 
+   If -c is not provided, it attempts to valid config files in the directory.
 
 Flags:
    --slow: Disable dynamic baud rate switching. Use this if you get "Target did not respond" errors.`,
@@ -52,7 +51,6 @@ Flags:
 }
 
 func init() {
-	flashCmd.Flags().StringVarP(&flashTarget, "board", "b", "", "Target board/core (required for binary flashing, e.g. E7-HE)")
 	flashCmd.Flags().StringVarP(&flashConfig, "config", "c", "", "Custom signing configuration file (JSON)")
 	flashCmd.Flags().BoolVar(&flashSlow, "slow", false, "Disable dynamic baud rate switching (more stable)")
 	flashCmd.Flags().StringVarP(&flashMethod, "method", "m", "ISP", "Loading method (ISP or JTAG)")
@@ -76,12 +74,6 @@ func runFlash(path string) {
 
 	if isBinary {
 		// --- BINARY MODE ---
-		if flashTarget == "" && flashConfig == "" {
-			color.Error("Error: Either --board (-b) or --config (-c) is required when flashing a binary file.")
-			os.Exit(1)
-		}
-		targetCore = flashTarget
-
 		binPath, _ := filepath.Abs(path)
 		workingDir = filepath.Dir(binPath)
 
@@ -91,93 +83,75 @@ func runFlash(path string) {
 			os.Exit(1)
 		}
 
-		// If using -c with a config file, use simplified SETOOLS workflow
-		if flashConfig != "" {
-			color.Info("Binary Mode with Config: Using simplified SETOOLS workflow")
+		// Use simplified SETOOLS workflow
+		color.Info("Binary Mode: Using simplified SETOOLS workflow")
 
-			// 1. Copy binary to toolkit/build/images/ with original name
-			configAbsPath, _ := filepath.Abs(flashConfig)
-			binBaseName := filepath.Base(binPath)
-			toolkitBinPath := filepath.Join(cfg.AlifToolsPath, "build", "images", binBaseName)
-
-			os.MkdirAll(filepath.Dir(toolkitBinPath), 0755)
-			color.Info("Copying binary to toolkit: %s", toolkitBinPath)
-
-			srcFile, _ := os.Open(binPath)
-			dstFile, _ := os.Create(toolkitBinPath)
-			io.Copy(dstFile, srcFile)
-			srcFile.Close()
-			dstFile.Close()
-
-			// 2. Run app-gen-toc from toolkit directory
-			color.Info("Generating TOC with config: %s", configAbsPath)
-			genTocCmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-gen-toc"), "-f", configAbsPath)
-			genTocCmd.Dir = cfg.AlifToolsPath
-			genTocCmd.Stdout = os.Stdout
-			genTocCmd.Stderr = os.Stderr
-			if err := genTocCmd.Run(); err != nil {
-				color.Error("app-gen-toc failed: %v", err)
-				os.Exit(1)
-			}
-
-			// 3. Select port and update ISP config
-			f := flasher.New(cfg)
-			port, err := f.SelectPort()
-			if err != nil {
-				color.Error("Port selection failed: %v", err)
-				os.Exit(1)
-			}
-
-			// Update ISP config file with selected port
-			ispConfigPath := filepath.Join(cfg.AlifToolsPath, "isp_config_data.cfg")
-			content, _ := os.ReadFile(ispConfigPath)
-			lines := strings.Split(string(content), "\n")
-			for i, line := range lines {
-				if strings.HasPrefix(strings.TrimSpace(line), "comport") {
-					lines[i] = fmt.Sprintf("comport %s", port)
-					break
-				}
-			}
-			os.WriteFile(ispConfigPath, []byte(strings.Join(lines, "\n")), 0644)
-
-			// 5. Run app-write-mram -p from toolkit directory
-			color.Info("Flashing with app-write-mram...")
-			flashCmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-write-mram"), "-p")
-			flashCmd.Dir = cfg.AlifToolsPath
-			flashCmd.Stdout = os.Stdout
-			flashCmd.Stderr = os.Stderr
-			if err := flashCmd.Run(); err != nil {
-				color.Error("Flashing failed: %v", err)
-				os.Exit(1)
-			}
-
-			color.Success("Flashing complete!")
-			return
-		}
-
-		// Original signing workflow for -b without -c
-		color.Info("Binary Mode: Processing %s for %s", binPath, flashTarget)
-		s := signer.New(cfg)
-		var errSign error
-		// Note: SignArtifact outputs AppTocPackage.bin in buildDir (workingDir)
-		_, errSign = s.SignArtifact(workingDir, workingDir, binPath, flashTarget, flashConfig)
-		if errSign != nil {
-			color.Error("Signing failed: %v", errSign)
+		// 0. Retrieve configuration (Explicit or Auto-detected)
+		// We pass flashConfig (could be empty) and workingDir to search in
+		_, resolvedConfigPath, err := targets.ResolveTargetConfig(flashConfig, workingDir)
+		if err != nil {
+			color.Error("Configuration error: %v", err)
 			os.Exit(1)
 		}
 
-		tocPath = filepath.Join(workingDir, "AppTocPackage.bin")
-		// SignArtifact renames/copies bin to "alif-img.bin" in buildDir for tool usage,
-		// but typically we should point flasher to the signed version?
-		// Signer creates "build/images/alif-img.bin" inside 'toolkit path' during process?
-		// Wait, signer implementation details:
-		// It copies binary to toolkit/alif-img.bin, runs tool, artifacts are in toolkit/build/images.
-		// Then it copies them BACK to buildDir.
-		// Let's verify signer.go behavior.
-		// "Retrieving all generated artifacts..." -> copies alif-img.bin and AppTocPackage.bin to buildDir.
-		signedBinPath = filepath.Join(workingDir, "alif-img.bin")
+		// 1. Copy binary to toolkit/build/images/ with original name
+		configAbsPath, _ := filepath.Abs(resolvedConfigPath)
+		binBaseName := filepath.Base(binPath)
+		toolkitBinPath := filepath.Join(cfg.AlifToolsPath, "build", "images", binBaseName)
 
-		color.Success("Signed and Table of Contents generated.")
+		os.MkdirAll(filepath.Dir(toolkitBinPath), 0755)
+		color.Info("Copying binary to toolkit: %s", toolkitBinPath)
+
+		srcFile, _ := os.Open(binPath)
+		dstFile, _ := os.Create(toolkitBinPath)
+		io.Copy(dstFile, srcFile)
+		srcFile.Close()
+		dstFile.Close()
+
+		// 2. Run app-gen-toc from toolkit directory
+		color.Info("Generating TOC with config: %s", configAbsPath)
+		genTocCmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-gen-toc"), "-f", configAbsPath)
+		genTocCmd.Dir = cfg.AlifToolsPath
+		genTocCmd.Stdout = os.Stdout
+		genTocCmd.Stderr = os.Stderr
+		if err := genTocCmd.Run(); err != nil {
+			color.Error("app-gen-toc failed: %v", err)
+			os.Exit(1)
+		}
+
+		// 3. Select port and update ISP config
+		f := flasher.New(cfg)
+		port, err := f.SelectPort()
+		if err != nil {
+			color.Error("Port selection failed: %v", err)
+			os.Exit(1)
+		}
+
+		// Update ISP config file with selected port
+		ispConfigPath := filepath.Join(cfg.AlifToolsPath, "isp_config_data.cfg")
+		content, _ := os.ReadFile(ispConfigPath)
+		lines := strings.Split(string(content), "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "comport") {
+				lines[i] = fmt.Sprintf("comport %s", port)
+				break
+			}
+		}
+		os.WriteFile(ispConfigPath, []byte(strings.Join(lines, "\n")), 0644)
+
+		// 5. Run app-write-mram -p from toolkit directory
+		color.Info("Flashing with app-write-mram...")
+		flashCmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-write-mram"), "-p")
+		flashCmd.Dir = cfg.AlifToolsPath
+		flashCmd.Stdout = os.Stdout
+		flashCmd.Stderr = os.Stderr
+		if err := flashCmd.Run(); err != nil {
+			color.Error("Flashing failed: %v", err)
+			os.Exit(1)
+		}
+
+		color.Success("Flashing complete!")
+		return
 
 	} else {
 		// --- SOLUTION MODE ---
@@ -218,13 +192,6 @@ func runFlash(path string) {
 		}
 	}
 
-	if targetCore == "" {
-		targetCore = "E7-HE"
-		if !isBinary {
-			color.Info("Warning: Target core not found in build state. Defaulting to %s.", targetCore)
-		}
-	}
-
 	// 3. Flasher Setup
 	cfg, _ := config.LoadConfig()
 	f := flasher.New(cfg)
@@ -238,6 +205,7 @@ func runFlash(path string) {
 
 	// 5. Flash
 	color.Info("Flashing artifacts from %s...", workingDir)
+	// targetCore might be empty or default, flashConfig is passed
 	if err := f.Flash(signedBinPath, tocPath, port, targetCore, flashConfig, flashSlow, flashMethod, flashVerbose, flashNoErase); err != nil {
 		color.Error("Flash failed: %v", err)
 		os.Exit(1)

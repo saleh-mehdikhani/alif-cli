@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var buildTarget string
+// Variables for flags
 var buildProject string
 
 var buildCmd = &cobra.Command{
@@ -34,9 +34,7 @@ If solution_path is not specified, uses the current directory.`,
 }
 
 func init() {
-	buildCmd.Flags().StringVarP(&buildTarget, "board", "b", "", "Target board/core (e.g. E7-HE)")
 	buildCmd.Flags().StringVarP(&buildProject, "project", "p", "", "Specific project name to build (optional)")
-	buildCmd.MarkFlagRequired("board")
 	rootCmd.AddCommand(buildCmd)
 }
 
@@ -56,26 +54,20 @@ func runBuild(solutionPath string) {
 
 	// 2. Build
 	if buildProject != "" {
-		color.Info("Building project '%s' in %s for target %s...", buildProject, solDir, buildTarget)
+		color.Info("Building project '%s' in %s...", buildProject, solDir)
 	} else {
-		color.Info("Building solution in %s for target %s...", solDir, buildTarget)
+		color.Info("Building solution in %s...", solDir)
 	}
 
 	b := builder.New(cfg)
-	if err := b.Build(solDir, buildTarget, buildProject); err != nil {
+	// Passing empty string as target board/context
+	if err := b.Build(solDir, "", buildProject); err != nil {
 		color.Error("Build failed: %v", err)
 		os.Exit(1)
 	}
 
 	// 3. Resolve Artifacts for Signing
-	// We need to know the specific context to find the file.
-	// We can try to re-resolve logic or find the fresh bin.
-	// For M55_HE, usually ends in +E7-HE.
-	// Let's assume standard template naming "blinky" or "hello"
 	solFile, _ := project.FindCsolution(solDir)
-	// If solFile is "alif.csolution.yml", checking projects inside is hard without parsing yaml.
-	// Workaround: Look for "out/*/*/*/blinky.bin" ?
-	// Let's scan `out/`
 	fmt.Printf("Using solution: %s\n", solFile)
 	binPath := findRecentBin(solDir)
 	if binPath == "" {
@@ -92,12 +84,14 @@ func runBuild(solutionPath string) {
 
 	// 5. Persist State (Optimistic - before signing because app-gen-toc crashes parent process on success)
 	fmt.Println("Saving build state (optimistic)...")
-	saveBuildState(solDir, binPath, tocPath, buildTarget)
+	// Save build state without target core info (empty)
+	saveBuildState(solDir, binPath, tocPath, "")
 
 	// We ignore return path from SignArtifact as we pre-calculated it
 	s := signer.New(cfg)
 	var errSign error
-	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, buildTarget, "")
+	// Signer is passed empty target core
+	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, "", "")
 	if errSign != nil {
 		color.Error("Signing failed: %v", errSign)
 		os.Exit(1)
