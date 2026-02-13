@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"alif-cli/internal/builder"
 	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 	"alif-cli/internal/project"
 	"alif-cli/internal/signer"
+	"alif-cli/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -46,87 +48,80 @@ func init() {
 }
 
 func runBuild(solutionPath string) {
+	start := time.Now()
+
 	// 1. Validate Solution
 	solDir, err := project.IsSolutionRoot(solutionPath)
 	if err != nil {
-		color.Error("Error: %v", err)
+		ui.Error(fmt.Sprintf("%v", err))
 		os.Exit(1)
 	}
 
 	cfg, _ := config.LoadConfig()
 	if cfg == nil || cfg.AlifToolsPath == "" {
-		color.Error("Error: Alif CLI not configured. Run 'alif setup' first.")
+		ui.Error("Alif CLI not configured. Run 'alif setup' first.")
 		os.Exit(1)
 	}
 
 	// 2. Build
-	if buildProject != "" {
-		color.Info("Building project '%s' in %s...", buildProject, solDir)
-	} else {
-		color.Info("Building solution in %s...", solDir)
-	}
-
+	// builder.Build handles its own UI (Resolve Context, Compile)
 	b := builder.New(cfg)
-	// Passing empty string as target board/context
 	selectedContext, err := b.Build(solDir, "", buildProject)
 	if err != nil {
-		color.Error("Build failed: %v", err)
+		// Builder prints error details via ui/fmt
+		ui.Error("Build process failed.")
 		os.Exit(1)
 	}
 
+	// Determine Artifact Path
+	binPath := b.GetArtifactPath(solDir, selectedContext)
+
 	if !buildSign {
-		color.Success("Build completed successfully.")
-		// We still need to find the artifact to tell the user where it is
-		binPath := b.GetArtifactPath(solDir, selectedContext)
-		color.Info("Artifact: %s", binPath)
-		color.Info("To create a bootable image (package/sign), run: alif image %s", binPath)
-		color.Info("Or use 'alif build -s' next time.")
+		// Summary
+		ui.Header("Build Summary")
+		ui.Item("Context", selectedContext)
+		ui.Item("Artifact", binPath)
+		ui.Item("Duration", time.Since(start).Round(time.Millisecond).String())
+
+		fmt.Println()
+		ui.Info(fmt.Sprintf("To flash this project, run: %s", color.Sprintf(color.BoldCyan, "alif flash -p %s", selectedContext)))
 		return
 	}
 
-	// 3. Resolve Artifacts for Signing
-	solFile, _ := project.FindCsolution(solDir)
-	fmt.Printf("Using solution: %s\n", solFile)
-
-	// Determine binPath from selectedContext
-	binPath := b.GetArtifactPath(solDir, selectedContext)
+	// 3. Resolve Artifacts for Signing (if path missing, try fallback)
 	if _, err := os.Stat(binPath); os.IsNotExist(err) {
-		// Fallback to recent bin if deterministic path fails (e.g. custom output dirs)
-		color.Warning("Could not find binary at expected path: %s", binPath)
-		color.Info("Scanning out/ directory for most recent binary...")
+		// ui.Warn(fmt.Sprintf("Binary not found at expected path: %s", binPath))
+		ui.Info("Scanning out/ directory for most recent binary...")
 		binPath = findRecentBin(solDir)
 	}
 
 	if binPath == "" {
-		color.Error("Error: Could not locate built binary.")
+		ui.Error("Could not locate built binary.")
 		os.Exit(1)
 	}
-	color.Info("Found binary: %s", binPath)
 
-	// Parse target from context (e.g. project.Release+E7-HE -> E7-HE)
+	// 4. Sign (Create Image)
+	// targetCore parsing
 	targetCore := ""
 	if parts := strings.Split(selectedContext, "+"); len(parts) > 1 {
 		targetCore = parts[1]
 	}
 
-	// 4. Sign (Create Image)
-	// Prepare In-Place Build Dir
-	signBuildDir := filepath.Dir(binPath) // Sign where the bin is
-
+	signBuildDir := filepath.Dir(binPath)
 	s := signer.New(cfg)
-	var errSign error
-	// Signer is passed target core and project name hints for config resolution
-	// It will prompt user to select config if multiple found after filtering.
-	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, targetCore, buildProject, "")
+	// signer.SignArtifact handles its own UI
+	_, errSign := s.SignArtifact(solDir, signBuildDir, binPath, targetCore, buildProject, "")
 	if errSign != nil {
-		color.Error("Image creation failed: %v", errSign)
+		ui.Error(fmt.Sprintf("Image creation failed: %v", errSign))
 		os.Exit(1)
 	}
 
-	// Output path is usually AppTocPackage.bin in signBuildDir
-	tocPath := filepath.Join(signBuildDir, "AppTocPackage.bin")
-	color.Success("Bootable image created: %s", tocPath)
-	color.Success("Build and packaging completed successfully.")
+	// Final Summary
+	ui.Header("Process Complete")
+	ui.Item("Context", selectedContext)
+	ui.Item("Image", filepath.Join(signBuildDir, "AppTocPackage.bin"))
+	ui.Item("Duration", time.Since(start).Round(time.Millisecond).String())
+	ui.Success("Build and packaging completed successfully.")
 }
 
 func findRecentBin(root string) string {
@@ -145,3 +140,12 @@ func findRecentBin(root string) string {
 	})
 	return recent
 }
+
+// Add Succeed wrapper to ui if missing or use Info
+// Checking ui package: Succeed exists as Spinner method but checking package level...
+// I added Succeed method to Spinner, but not package level func.
+// I'll check ui.go again.
+// ui.go has Info, Warn, Error. No Succeed at package level.
+// I'll add ui.Success wrap or just use Info with green checkmark manually if needed.
+// But wait, user requested "result of current step".
+// I'll check ui.go again to see if I can add Success function.

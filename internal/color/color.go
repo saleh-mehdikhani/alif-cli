@@ -14,6 +14,10 @@ const (
 	Blue     = "\033[34m"
 	Cyan     = "\033[36m"
 	BoldCode = "\033[1m"
+	Dim      = "\033[2m"
+	Magenta  = "\033[35m"
+	White    = "\033[37m"
+	BoldCyan = "\033[1;36m"
 )
 
 var colorsEnabled = true

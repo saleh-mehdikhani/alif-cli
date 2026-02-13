@@ -1,12 +1,13 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"alif-cli/internal/color"
 	"alif-cli/internal/config"
 	"alif-cli/internal/signer"
+	"alif-cli/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -34,31 +35,30 @@ func runImage(binPath string) {
 	// 1. Validate Input
 	absBinPath, err := filepath.Abs(binPath)
 	if err != nil {
-		color.Error("Error resolving binary path: %v", err)
+		ui.Error(fmt.Sprintf("Error resolving binary path: %v", err))
 		os.Exit(1)
 	}
 	if _, err := os.Stat(absBinPath); os.IsNotExist(err) {
-		color.Error("Binary file not found: %s", absBinPath)
+		ui.Error(fmt.Sprintf("Binary file not found: %s", absBinPath))
 		os.Exit(1)
 	}
 
 	cfg, _ := config.LoadConfig()
 	if cfg == nil || cfg.AlifToolsPath == "" {
-		color.Error("Error: Alif CLI not configured. Run 'alif setup' first.")
+		ui.Error("Alif CLI not configured. Run 'alif setup' first.")
 		os.Exit(1)
 	}
 
 	workDir := filepath.Dir(absBinPath)
 
-	// 2. Run Signer
+	// signer.SignArtifact prints its own UI Header ("Create Bootable Image")
 	s := signer.New(cfg)
-	// targetCore is unused in SignArtifact/ResolveTargetConfig if explicit config passed, but helpful if auto-detecting
+	// targetCore is unused in SignArtifact/ResolveTargetConfig if explicit config passed
 	tocPath, err := s.SignArtifact(workDir, workDir, absBinPath, "", "", imageConfig)
 	if err != nil {
-		color.Error("Failed to create image: %v", err)
+		ui.Error(fmt.Sprintf("Failed to create image: %v", err))
 		os.Exit(1)
 	}
 
-	color.Success("Image created successfully: %s", tocPath)
-	color.Info("Artifacts (alif-img.bin, AppTocPackage.bin) are in: %s", workDir)
+	ui.Success(fmt.Sprintf("Image created successfully: %s", filepath.Base(tocPath)))
 }

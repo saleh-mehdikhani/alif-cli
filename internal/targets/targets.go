@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"alif-cli/internal/color"
+	"alif-cli/internal/ui"
 )
 
 type TargetConfig map[string]interface{}
@@ -19,7 +19,6 @@ func (tc TargetConfig) GetMRAMAddress() string {
 			return addr
 		}
 	}
-	// Fallback/Recursive search for flat structures (like Ethos config)
 	for _, v := range tc {
 		if sub, ok := v.(map[string]interface{}); ok {
 			if addr, ok := sub["mramAddress"].(string); ok {
@@ -47,16 +46,11 @@ func (tc TargetConfig) GetCPU() string {
 	return ""
 }
 
-// ResolveTargetConfig determines the configuration to use based on priority:
-// 1. Explicit file path
-// 2. Auto-detected file in .alif/, build/config/, or current directory.
-// If multiple files are found during auto-detection, it filters based on hints (core/project name).
-// If still ambiguous, it prompts the user to select one.
-// Returns the parsed config, the absolute path to the config file, and error.
+// ResolveTargetConfig determines the configuration to use
 func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, projectHint string) (TargetConfig, string, error) {
 	var finalConfig TargetConfig
 	var resolvedPath string
-	var sourceDescription string
+	// var sourceDescription string // Handled by UI Item
 
 	// 1. Explicit Config
 	if explicitPath != "" {
@@ -68,7 +62,8 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 		if err = json.Unmarshal(content, &finalConfig); err != nil {
 			return nil, "", fmt.Errorf("failed to parse config file '%s': %w", explicitPath, err)
 		}
-		sourceDescription = fmt.Sprintf("Explicit file: %s", explicitPath)
+		ui.Item("Config Source", "Explicit File")
+		ui.Item("File", filepath.Base(explicitPath))
 	} else {
 		// 2. Auto-detect logic
 		root := "."
@@ -76,7 +71,6 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 			root = searchRoot
 		}
 
-		// Collect candidates
 		candidates := []string{}
 		searchDirs := []string{
 			filepath.Join(root, ".alif"),
@@ -87,17 +81,14 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 		for _, d := range searchDirs {
 			files, _ := filepath.Glob(filepath.Join(d, "*.json"))
 			for _, f := range files {
-				// Filter out non-config files
 				base := filepath.Base(f)
 				if strings.Contains(base, "device-config") || base == "vcpkg-configuration.json" {
 					continue
 				}
-				// Verify it's parseable as valid config
 				content, err := os.ReadFile(f)
 				if err == nil {
 					var temp TargetConfig
 					if json.Unmarshal(content, &temp) == nil {
-						// Only consider it a candidate if it has USER_APP or reasonable keys
 						if temp.GetMRAMAddress() != "" || temp.GetCPU() != "" {
 							candidates = append(candidates, f)
 						}
@@ -110,27 +101,22 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 			return nil, "", fmt.Errorf("no configuration files found in auto-detect paths (%s). Please specify one with -c", root)
 		}
 
-		// Filter logic
 		if len(candidates) > 1 {
-			// Try filtering by coreHint
 			if coreHint != "" {
 				var filtered []string
 				for _, c := range candidates {
-					// e.g. M55_HE_cfg.json contains "M55_HE"
-					// Hints might have special chars, so plain string contains is best for now
 					if strings.Contains(strings.ToLower(filepath.Base(c)), strings.ToLower(coreHint)) {
 						filtered = append(filtered, c)
 					}
 				}
 				if len(filtered) > 0 {
-					candidates = filtered // Narrow down
+					candidates = filtered
 					if len(candidates) == 1 {
-						color.Info("Auto-selected config based on core hint '%s': %s", coreHint, filepath.Base(candidates[0]))
+						ui.Item("Auto-Select", fmt.Sprintf("Based on core hint '%s'", coreHint))
 					}
 				}
 			}
 
-			// If still ambiguous, try projectHint as tie-breaker/filter
 			if len(candidates) > 1 && projectHint != "" {
 				var filtered []string
 				for _, c := range candidates {
@@ -139,9 +125,9 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 					}
 				}
 				if len(filtered) > 0 {
-					candidates = filtered // Narrow down
+					candidates = filtered
 					if len(candidates) == 1 {
-						color.Info("Auto-selected config based on project hint '%s': %s", projectHint, filepath.Base(candidates[0]))
+						ui.Item("Auto-Select", fmt.Sprintf("Based on project hint '%s'", projectHint))
 					}
 				}
 			}
@@ -149,12 +135,9 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 
 		if len(candidates) == 1 {
 			resolvedPath = candidates[0]
-			if sourceDescription == "" { // Don't overwrite if auto-selected log already printed?
-				// Just log generally
-				// color.Info("Auto-detected single configuration file: %s", resolvedPath)
-			}
+			ui.Item("Config", filepath.Base(resolvedPath))
 		} else {
-			color.Info("Multiple configuration files found:")
+			fmt.Println("Multiple configuration files found:")
 			for i, c := range candidates {
 				fmt.Printf("[%d] %s\n", i+1, c)
 			}
@@ -165,7 +148,7 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 				return nil, "", fmt.Errorf("invalid selection")
 			}
 			resolvedPath = candidates[selection-1]
-			color.Info("Selected configuration file: %s", resolvedPath)
+			ui.Item("Selected", filepath.Base(resolvedPath))
 		}
 
 		content, err := os.ReadFile(resolvedPath)
@@ -175,14 +158,7 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 		if err = json.Unmarshal(content, &finalConfig); err != nil {
 			return nil, "", fmt.Errorf("failed to parse selected config: %w", err)
 		}
-		sourceDescription = fmt.Sprintf("Auto-detected file: %s", resolvedPath)
 	}
-
-	// Logging
-	color.Info("Configuration Source: %s", sourceDescription)
-	// color.Info("Effective Values:")
-	// color.Info("  - MRAM Address: %s", finalConfig.GetMRAMAddress())
-	// color.Info("  - CPU ID:       %s", finalConfig.GetCPU())
 
 	return finalConfig, resolvedPath, nil
 }

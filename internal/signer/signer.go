@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 
 	"alif-cli/internal/config"
 	"alif-cli/internal/targets"
+	"alif-cli/internal/ui"
 )
 
 type Signer struct {
@@ -21,9 +23,11 @@ func New(cfg *config.Config) *Signer {
 }
 
 // SignArtifact creates a bootable image.
-// coreHint and projectHint are used to resolve the configuration file if configPathOverride is empty.
 func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint, projectHint, configPathOverride string) (string, error) {
+	ui.Header("Create Bootable Image")
+
 	// Use ResolveTargetConfig to find the config file with hints
+	// ResolveTargetConfig handles its own UI items (Config Selection)
 	_, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir, coreHint, projectHint)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve signing config: %w", err)
@@ -59,8 +63,8 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 
 	// Copy binary to the path specified in config (relative to toolkit directory)
 	toolkitBinPath := filepath.Join(s.Cfg.AlifToolsPath, binaryPathInConfig)
+	ui.Item("Staging", filepath.Base(toolkitBinPath))
 
-	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(toolkitBinPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for binary: %w", err)
 	}
@@ -69,22 +73,27 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 	if err := copyFile(binaryPath, toolkitBinPath); err != nil {
 		return "", fmt.Errorf("failed to copy binary: %w", err)
 	}
-	// Don't remove the binary - app-write-mram needs it at this exact path
 
 	// 3. Run tool from ROOT with original config (no patching needed)
 	toolPath := filepath.Join(s.Cfg.AlifToolsPath, "app-gen-toc")
 	cmd := exec.Command(toolPath, "-f", srcCfg, "-o", "build/AppTocPackage.bin")
 	cmd.Dir = s.Cfg.AlifToolsPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	fmt.Println("DEBUG: Running app-gen-toc from Toolkit Root...")
+	// Capture output
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	sp := ui.StartSpinner("Running app-gen-toc...")
 	if err := cmd.Run(); err != nil {
+		sp.Fail("TOC generation failed")
+		fmt.Println("\n" + output.String()) // Print full tool output
 		return "", fmt.Errorf("app-gen-toc failed: %w", err)
 	}
+	sp.Succeed("TOC generated successfully")
 
 	// 4. Retrieve ALL generated artifacts back to Project buildDir
-	fmt.Println("Retrieving all generated artifacts...")
+	// ui.Info("Retrieving artifacts...")
 
 	artifacts := []struct{ src, dst string }{
 		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin"), filepath.Join(buildDir, "AppTocPackage.bin")},
@@ -105,7 +114,11 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 		}
 	}
 
-	return filepath.Join(buildDir, "AppTocPackage.bin"), nil
+	// Report result
+	finalToc := filepath.Join(buildDir, "AppTocPackage.bin")
+	// ui.Item("Output", filepath.Base(finalToc))
+
+	return finalToc, nil
 }
 
 func copyFile(src, dst string) error {

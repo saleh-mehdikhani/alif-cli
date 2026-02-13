@@ -2,6 +2,7 @@ package builder
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"alif-cli/internal/config"
+	"alif-cli/internal/ui"
 )
 
 type Builder struct {
@@ -42,13 +44,17 @@ func (b *Builder) setupEnv() []string {
 	env = append(env, "GCC_TOOLCHAIN_13_2_1="+b.Cfg.GccToolchain)
 	env = append(env, "CMSIS_PACK_ROOT="+b.Cfg.CmsisPackRoot)
 
-	// Set explicit PATH for child process finding tools if needed (though exec.Command uses parent PATH for lookups usually)
-	// We return env to be set on cmd.Env
 	return env
 }
 
 // ResolveContext lists available contexts and prompts user to select one if ambiguous.
 func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter string) (string, error) {
+	ui.Header("Resolve Build Context")
+	ui.Item("Filter", projectFilter)
+	if targetFilter != "" {
+		ui.Item("Target", targetFilter)
+	}
+
 	// Find solution file
 	solutionFile, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
 	if len(solutionFile) == 0 {
@@ -59,14 +65,10 @@ func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter strin
 	env := b.setupEnv()
 
 	// List available contexts
-	// Note: We generally assume cbuild is in system PATH or CMSIS Toolbox path.
-	// If it's only in CMSIS Toolbox path and that's not in system PATH, exec.Command might fail unless we use absolute path.
-	// But sticking to existing logic:
 	cmdList := exec.Command("cbuild", "list", "contexts", sol)
 	cmdList.Env = env
 	out, err := cmdList.Output()
 	if err != nil {
-		// Provide helpful error if cbuild not found
 		if strings.Contains(err.Error(), "executable file not found") {
 			return "", fmt.Errorf("cbuild not found. Ensure CMSIS Toolbox is installed and in PATH. Error: %v", err)
 		}
@@ -80,11 +82,9 @@ func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter strin
 		if line == "" {
 			continue
 		}
-		// Filter by target if provided
 		if targetFilter != "" && !strings.HasSuffix(line, "+"+targetFilter) {
 			continue
 		}
-		// Filter by project if provided (supports partial match e.g. "hello", "hello.debug")
 		if projectFilter != "" && !strings.HasPrefix(line, projectFilter) {
 			continue
 		}
@@ -92,12 +92,14 @@ func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter strin
 	}
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no matching build contexts found for target='%s' project='%s' in %s", targetFilter, projectFilter, sol)
+		return "", fmt.Errorf("no matching build contexts found for filter='%s'", projectFilter)
 	}
 
 	var selectedContext string
 	if len(candidates) == 1 {
 		selectedContext = candidates[0]
+		ui.Item("Selected", selectedContext)
+		// ui.Success("Context resolved automatically") // Not implemented in UI yet, assume implicit
 	} else {
 		fmt.Println("Multiple build contexts found:")
 		for i, c := range candidates {
@@ -111,21 +113,24 @@ func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter strin
 			return "", fmt.Errorf("invalid selection")
 		}
 		selectedContext = candidates[selection-1]
+		ui.Item("Selected", selectedContext)
 	}
 
 	return selectedContext, nil
 }
 
 func (b *Builder) Build(solutionPath, target, projectName string) (string, error) {
-	// 1. Resolve Context
+	// 1. Resolve Context (Handles its own UI)
 	selectedContext, err := b.ResolveContext(solutionPath, target, projectName)
 	if err != nil {
 		return "", err
 	}
 
-	fmt.Printf("Building context: %s\n", selectedContext)
+	ui.Header("Compile Source Code")
+	ui.Item("Context", selectedContext)
+	// ui.Item("Toolchain", "GCC 13.2.1") // We assume this from config/env
 
-	// find solution again purely for the command arg (ResolveContext checks it too)
+	// find solution again
 	solutionFile, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
 	sol := solutionFile[0]
 
@@ -134,29 +139,35 @@ func (b *Builder) Build(solutionPath, target, projectName string) (string, error
 	cmd := exec.Command("cbuild", sol, "--context", selectedContext, "--packs")
 	cmd.Env = env
 	cmd.Dir = solutionPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
+	// Capture output
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	s := ui.StartSpinner(fmt.Sprintf("Building %s...", selectedContext))
 	if err := cmd.Run(); err != nil {
+		s.Fail("Build failed")
+		fmt.Println("\n" + output.String()) // Print full output on error
 		return "", err
 	}
+	s.Succeed("Build completed successfully")
+
+	// Optional: Print size or artifacts if possible?
+	// But Build returns context, caller prints artifact path.
 
 	return selectedContext, nil
 }
 
 // GetArtifactPath returns the expected location of the elf/bin after build
 func (b *Builder) GetArtifactPath(projectPath, fullContext string) string {
-	// Standard CMSIS layout: out/<project>/<target>/<build-type>/<project>.elf
-	// context: project.build-type+target
-	// Example: blinky.debug+E1C-HE
-
 	parts := strings.Split(fullContext, "+")
 	if len(parts) != 2 {
 		return ""
 	}
 	target := parts[1]
 
-	left := parts[0] // project.build-type
+	left := parts[0]
 	lastDot := strings.LastIndex(left, ".")
 	if lastDot == -1 {
 		return ""
