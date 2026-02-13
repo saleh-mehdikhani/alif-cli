@@ -20,6 +20,7 @@ import (
 // Variables for flags
 var buildProject string
 var buildSign bool
+var buildClean bool
 
 var buildCmd = &cobra.Command{
 	Use:   "build [solution_path]",
@@ -27,11 +28,10 @@ var buildCmd = &cobra.Command{
 	Long: `Compiles the source code using cbuild.
 	
 If solution_path is not specified, uses the current directory.
-The --project flag (-p) filters the build context. You can specify a partial or full context string:
-  Format: <project>.<build-type>+<target>
-  Example: alif build -p blinky.debug+E7-HE
+The --project (-p) flag filters the build context.
+The --clean flag forces a rebuild (clean then build).
   
-By default, this command compiles the code. To create a bootable image (package/sign) immediately, use the --sign (-s) flag.`,
+By default, this command compiles the code. To create a bootable image immediately, use the --sign (-s) flag.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		solutionPath := ""
 		if len(args) > 0 {
@@ -44,6 +44,7 @@ By default, this command compiles the code. To create a bootable image (package/
 func init() {
 	buildCmd.Flags().StringVarP(&buildProject, "project", "p", "", "Project name or context filter (e.g. 'blinky' or 'blinky.debug')")
 	buildCmd.Flags().BoolVarP(&buildSign, "sign", "s", false, "Create bootable image (package/sign) after building")
+	buildCmd.Flags().BoolVar(&buildClean, "clean", false, "Clean artifacts and rebuild (full rebuild)")
 	rootCmd.AddCommand(buildCmd)
 }
 
@@ -64,16 +65,22 @@ func runBuild(solutionPath string) {
 	}
 
 	// 2. Build
-	// builder.Build handles its own UI (Resolve Context, Compile)
 	b := builder.New(cfg)
-	selectedContext, err := b.Build(solDir, "", buildProject)
+	// Pass clean flag to trigger --rebuild if requested
+	selectedContext, err := b.Build(solDir, "", buildProject, buildClean)
 	if err != nil {
-		// Builder prints error details via ui/fmt
 		ui.Error("Build process failed.")
 		os.Exit(1)
 	}
 
-	// Determine Artifact Path
+	// Determine Artifact Path (Only if single context selected)
+	if selectedContext == "" {
+		ui.Header("Process Complete")
+		ui.Item("Duration", time.Since(start).Round(time.Millisecond).String())
+		ui.Success("Clean & Rebuild of all contexts completed successfully.")
+		return
+	}
+
 	binPath := b.GetArtifactPath(solDir, selectedContext)
 
 	if !buildSign {
@@ -90,7 +97,6 @@ func runBuild(solutionPath string) {
 
 	// 3. Resolve Artifacts for Signing (if path missing, try fallback)
 	if _, err := os.Stat(binPath); os.IsNotExist(err) {
-		// ui.Warn(fmt.Sprintf("Binary not found at expected path: %s", binPath))
 		ui.Info("Scanning out/ directory for most recent binary...")
 		binPath = findRecentBin(solDir)
 	}
@@ -101,7 +107,6 @@ func runBuild(solutionPath string) {
 	}
 
 	// 4. Sign (Create Image)
-	// targetCore parsing
 	targetCore := ""
 	if parts := strings.Split(selectedContext, "+"); len(parts) > 1 {
 		targetCore = parts[1]
@@ -109,7 +114,6 @@ func runBuild(solutionPath string) {
 
 	signBuildDir := filepath.Dir(binPath)
 	s := signer.New(cfg)
-	// signer.SignArtifact handles its own UI
 	_, errSign := s.SignArtifact(solDir, signBuildDir, binPath, targetCore, buildProject, "")
 	if errSign != nil {
 		ui.Error(fmt.Sprintf("Image creation failed: %v", errSign))
@@ -140,12 +144,3 @@ func findRecentBin(root string) string {
 	})
 	return recent
 }
-
-// Add Succeed wrapper to ui if missing or use Info
-// Checking ui package: Succeed exists as Spinner method but checking package level...
-// I added Succeed method to Spinner, but not package level func.
-// I'll check ui.go again.
-// ui.go has Info, Warn, Error. No Succeed at package level.
-// I'll add ui.Success wrap or just use Info with green checkmark manually if needed.
-// But wait, user requested "result of current step".
-// I'll check ui.go again to see if I can add Success function.

@@ -119,24 +119,45 @@ func (b *Builder) ResolveContext(solutionPath, targetFilter, projectFilter strin
 	return selectedContext, nil
 }
 
-func (b *Builder) Build(solutionPath, target, projectName string) (string, error) {
-	// 1. Resolve Context (Handles its own UI)
-	selectedContext, err := b.ResolveContext(solutionPath, target, projectName)
-	if err != nil {
-		return "", err
+func (b *Builder) Build(solutionPath, target, projectName string, clean bool) (string, error) {
+	// Find solution file first/always
+	solutionFiles, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
+	if len(solutionFiles) == 0 {
+		return "", fmt.Errorf("no .csolution.yml file found in %s", solutionPath)
 	}
+	sol := solutionFiles[0]
 
-	ui.Header("Compile Source Code")
-	ui.Item("Context", selectedContext)
-	// ui.Item("Toolchain", "GCC 13.2.1") // We assume this from config/env
+	var selectedContext string
+	var err error
 
-	// find solution again
-	solutionFile, _ := filepath.Glob(filepath.Join(solutionPath, "*.csolution.yml"))
-	sol := solutionFile[0]
+	// If cleaning without specific filters, we Clean/Build ALL (skip selection)
+	buildAll := clean && target == "" && projectName == ""
+
+	if !buildAll {
+		// 1. Resolve Context (Handles its own UI)
+		selectedContext, err = b.ResolveContext(solutionPath, target, projectName)
+		if err != nil {
+			return "", err
+		}
+		ui.Header("Compile Source Code")
+		ui.Item("Context", selectedContext)
+	} else {
+		ui.Header("Clean & Rebuild Solution")
+		ui.Item("Scope", "All Contexts")
+	}
 
 	env := b.setupEnv()
 
-	cmd := exec.Command("cbuild", sol, "--context", selectedContext, "--packs")
+	args := []string{sol, "--packs"}
+	if selectedContext != "" {
+		args = append(args, "--context", selectedContext)
+	}
+	if clean {
+		args = append(args, "--rebuild")
+		ui.Item("Action", "Clean & Build")
+	}
+
+	cmd := exec.Command("cbuild", args...)
 	cmd.Env = env
 	cmd.Dir = solutionPath
 
@@ -145,7 +166,14 @@ func (b *Builder) Build(solutionPath, target, projectName string) (string, error
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	s := ui.StartSpinner(fmt.Sprintf("Building %s...", selectedContext))
+	msg := "Building..."
+	if selectedContext != "" {
+		msg = fmt.Sprintf("Building %s...", selectedContext)
+	} else if buildAll {
+		msg = "Building all contexts..."
+	}
+
+	s := ui.StartSpinner(msg)
 	if err := cmd.Run(); err != nil {
 		s.Fail("Build failed")
 		fmt.Println("\n" + output.String()) // Print full output on error
