@@ -20,11 +20,11 @@ func New(cfg *config.Config) *Signer {
 	return &Signer{Cfg: cfg}
 }
 
-func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, targetCore string, configPathOverride string) (string, error) {
-	// targetCore is deprecated/unused for lookup now, relying on config
-
-	// Use ResolveTargetConfig to find the config file
-	_, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir)
+// SignArtifact creates a bootable image.
+// coreHint and projectHint are used to resolve the configuration file if configPathOverride is empty.
+func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint, projectHint, configPathOverride string) (string, error) {
+	// Use ResolveTargetConfig to find the config file with hints
+	_, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir, coreHint, projectHint)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve signing config: %w", err)
 	}

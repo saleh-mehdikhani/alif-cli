@@ -29,7 +29,7 @@ The --project flag (-p) filters the build context. You can specify a partial or 
   Format: <project>.<build-type>+<target>
   Example: alif build -p blinky.debug+E7-HE
   
-By default, this command only compiles the code. To sign the artifact immediately, use the --sign (-s) flag.`,
+By default, this command compiles the code. To create a bootable image (package/sign) immediately, use the --sign (-s) flag.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		solutionPath := ""
 		if len(args) > 0 {
@@ -41,7 +41,7 @@ By default, this command only compiles the code. To sign the artifact immediatel
 
 func init() {
 	buildCmd.Flags().StringVarP(&buildProject, "project", "p", "", "Project name or context filter (e.g. 'blinky' or 'blinky.debug')")
-	buildCmd.Flags().BoolVarP(&buildSign, "sign", "s", false, "Sign the artifact after building (interactive)")
+	buildCmd.Flags().BoolVarP(&buildSign, "sign", "s", false, "Create bootable image (package/sign) after building")
 	rootCmd.AddCommand(buildCmd)
 }
 
@@ -79,7 +79,7 @@ func runBuild(solutionPath string) {
 		// We still need to find the artifact to tell the user where it is
 		binPath := b.GetArtifactPath(solDir, selectedContext)
 		color.Info("Artifact: %s", binPath)
-		color.Info("To sign this artifact, run: alif sign %s", binPath)
+		color.Info("To create a bootable image (package/sign), run: alif image %s", binPath)
 		color.Info("Or use 'alif build -s' next time.")
 		return
 	}
@@ -109,29 +109,24 @@ func runBuild(solutionPath string) {
 		targetCore = parts[1]
 	}
 
-	// 4. Sign
+	// 4. Sign (Create Image)
 	// Prepare In-Place Build Dir
 	signBuildDir := filepath.Dir(binPath) // Sign where the bin is
-	// Output is typically "AppTocPackage.bin" in CWD (buildDir)
-	tocPath := filepath.Join(signBuildDir, "AppTocPackage.bin")
 
-	// 5. Persist State (Optimistic - before signing because app-gen-toc crashes parent process on success)
-	fmt.Println("Saving build state (optimistic)...")
-	// Save build state
-	saveBuildState(solDir, binPath, tocPath, targetCore)
-
-	// We ignore return path from SignArtifact as we pre-calculated it
 	s := signer.New(cfg)
 	var errSign error
-	// Signer is passed empty target core (deprecated arg) and empty config override
-	// It will prompt user to select config if multiple found.
-	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, "", "")
+	// Signer is passed target core and project name hints for config resolution
+	// It will prompt user to select config if multiple found after filtering.
+	_, errSign = s.SignArtifact(solDir, signBuildDir, binPath, targetCore, buildProject, "")
 	if errSign != nil {
-		color.Error("Signing failed: %v", errSign)
+		color.Error("Image creation failed: %v", errSign)
 		os.Exit(1)
 	}
-	color.Success("Signed artifact created: %s", tocPath)
-	color.Success("Build completed successfully.")
+
+	// Output path is usually AppTocPackage.bin in signBuildDir
+	tocPath := filepath.Join(signBuildDir, "AppTocPackage.bin")
+	color.Success("Bootable image created: %s", tocPath)
+	color.Success("Build and packaging completed successfully.")
 }
 
 func findRecentBin(root string) string {
@@ -139,21 +134,14 @@ func findRecentBin(root string) string {
 	var recentTime int64
 	filepath.Walk(filepath.Join(root, "out"), func(path string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() && strings.HasSuffix(info.Name(), ".bin") {
-			fmt.Printf("Debug: Checking %s\n", info.Name())
 			if !strings.Contains(info.Name(), "alif-img") && !strings.Contains(info.Name(), "AppTocPackage") {
 				if info.ModTime().Unix() > recentTime {
 					recentTime = info.ModTime().Unix()
 					recent = path
-					fmt.Printf("Debug: Selected candidate %s\n", path)
 				}
 			}
 		}
 		return nil
 	})
 	return recent
-}
-
-func saveBuildState(root, bin, toc, target string) {
-	content := fmt.Sprintf("%s\n%s\n%s", bin, toc, target)
-	_ = os.WriteFile(filepath.Join(root, ".alif_build_state"), []byte(content), 0644)
 }

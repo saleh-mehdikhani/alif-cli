@@ -50,9 +50,10 @@ func (tc TargetConfig) GetCPU() string {
 // ResolveTargetConfig determines the configuration to use based on priority:
 // 1. Explicit file path
 // 2. Auto-detected file in .alif/, build/config/, or current directory.
-// If multiple files are found during auto-detection, it prompts the user to select one.
+// If multiple files are found during auto-detection, it filters based on hints (core/project name).
+// If still ambiguous, it prompts the user to select one.
 // Returns the parsed config, the absolute path to the config file, and error.
-func ResolveTargetConfig(explicitPath string, searchRoot string) (TargetConfig, string, error) {
+func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, projectHint string) (TargetConfig, string, error) {
 	var finalConfig TargetConfig
 	var resolvedPath string
 	var sourceDescription string
@@ -109,9 +110,49 @@ func ResolveTargetConfig(explicitPath string, searchRoot string) (TargetConfig, 
 			return nil, "", fmt.Errorf("no configuration files found in auto-detect paths (%s). Please specify one with -c", root)
 		}
 
+		// Filter logic
+		if len(candidates) > 1 {
+			// Try filtering by coreHint
+			if coreHint != "" {
+				var filtered []string
+				for _, c := range candidates {
+					// e.g. M55_HE_cfg.json contains "M55_HE"
+					// Hints might have special chars, so plain string contains is best for now
+					if strings.Contains(strings.ToLower(filepath.Base(c)), strings.ToLower(coreHint)) {
+						filtered = append(filtered, c)
+					}
+				}
+				if len(filtered) > 0 {
+					candidates = filtered // Narrow down
+					if len(candidates) == 1 {
+						color.Info("Auto-selected config based on core hint '%s': %s", coreHint, filepath.Base(candidates[0]))
+					}
+				}
+			}
+
+			// If still ambiguous, try projectHint as tie-breaker/filter
+			if len(candidates) > 1 && projectHint != "" {
+				var filtered []string
+				for _, c := range candidates {
+					if strings.Contains(strings.ToLower(filepath.Base(c)), strings.ToLower(projectHint)) {
+						filtered = append(filtered, c)
+					}
+				}
+				if len(filtered) > 0 {
+					candidates = filtered // Narrow down
+					if len(candidates) == 1 {
+						color.Info("Auto-selected config based on project hint '%s': %s", projectHint, filepath.Base(candidates[0]))
+					}
+				}
+			}
+		}
+
 		if len(candidates) == 1 {
 			resolvedPath = candidates[0]
-			color.Info("Auto-detected single configuration file: %s", resolvedPath)
+			if sourceDescription == "" { // Don't overwrite if auto-selected log already printed?
+				// Just log generally
+				// color.Info("Auto-detected single configuration file: %s", resolvedPath)
+			}
 		} else {
 			color.Info("Multiple configuration files found:")
 			for i, c := range candidates {
@@ -139,9 +180,9 @@ func ResolveTargetConfig(explicitPath string, searchRoot string) (TargetConfig, 
 
 	// Logging
 	color.Info("Configuration Source: %s", sourceDescription)
-	color.Info("Effective Values:")
-	color.Info("  - MRAM Address: %s", finalConfig.GetMRAMAddress())
-	color.Info("  - CPU ID:       %s", finalConfig.GetCPU())
+	// color.Info("Effective Values:")
+	// color.Info("  - MRAM Address: %s", finalConfig.GetMRAMAddress())
+	// color.Info("  - CPU ID:       %s", finalConfig.GetCPU())
 
 	return finalConfig, resolvedPath, nil
 }
