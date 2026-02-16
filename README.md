@@ -1,215 +1,69 @@
 # Alif CLI
 
-A command-line interface tool for building, signing, and flashing applications to Alif Semiconductor boards. Inspired by Zephyr's `west` tool, `alif` simplifies the development workflow for Alif devkits.
+**Alif CLI** is a powerful command-line interface designed to streamline the development workflow for Alif Semiconductor devices (e.g., AK-E7-AIML). It abstracts the complexity of underlying tools—such as CMSIS Toolbox and Alif Security Toolkit—providing a unified interface for building, signing, and flashing applications.
 
-## Features
+## Installation
 
-- ✅ **Build** - Compile projects using CMSIS Toolbox
-- ✅ **Sign** - Automatically sign binaries with Alif Security Toolkit
-- ✅ **Flash** - Flash signed firmware to connected devkit
-- ✅ **Auto-detect** - Automatically find installed tools
-- ✅ **Cross-platform** - Works on macOS, Linux, and Windows
-- ✅ **In-place builds** - All artifacts stay in your project directory
-
-## Quick Start
-
-### Prerequisites
-
-1. **Go** (version 1.20 or later)
-   - macOS: `brew install go`
-   - Linux: `sudo apt install golang` or download from [golang.org](https://golang.org/dl/)
-   - Windows: Download installer from [golang.org](https://golang.org/dl/)
-
-2. **Alif Development Tools** (installed separately):
-   - Alif Security Toolkit (`app-write-mram`, `app-gen-toc`, etc.)
-   - CMSIS Toolbox (`cbuild`)
-   - ARM GNU Toolchain (`arm-none-eabi-gcc`)
-
-### Building the Project
-
-1. **Clone or navigate to the project**:
-   ```bash
-   cd /path/to/alif-cli
-   ```
-
-2. **Download Go dependencies**:
-   ```bash
-   go mod download
-   ```
-
-3. **Build the binary**:
-   ```bash
-   go build -o alif
-   ```
-
-4. **(Optional) Install globally**:
-   
-   **macOS/Linux:**
-   ```bash
-   sudo cp alif /usr/local/bin/alif
-   ```
-   Or for user-only installation:
-   ```bash
-   mkdir -p ~/.local/bin
-   cp alif ~/.local/bin/alif
-   # Add to PATH if needed
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-   ```
-
-   **Windows:**
-   ```powershell
-   copy alif.exe C:\Windows\System32\
-   ```
-   Or add to a directory in your PATH.
-
-### First-Time Setup
-
-Run the setup command to configure tool paths:
-
+### Quick Install (macOS/Linux)
 ```bash
-./alif setup
+./install.sh
 ```
+See the `scripts/` directory for advanced packaging options.
 
-The tool will auto-detect installed Alif tools. If auto-detection fails, it will prompt you to enter paths manually.
+## Commands
 
-Configuration is saved to `~/.alif/config.yaml`.
+### `alif build`
+**Builds and packages your application.**
 
-## Usage
+This command compiles the project source code using the CMSIS build system (`cbuild`). It resolves the build context (Target + Build Type) and prepares the binary artifacts. The CLI also supports cleaning the project before building.
 
-### Building a Project
-
-Navigate to your Alif project directory and run:
-
+**Usage:**
 ```bash
-alif build -b <target>
+alif build -p <project_name> [flags]
 ```
+- `-p, --project`: Specify the project name or build context (e.g., `blinky` or `blinky.debug+E7-HE`).
+- `--clean`: Clean artifacts before building.
 
-**Examples:**
+**About Build Contexts:**
+The build context name follows the format `<project>.<build-type>+<target>` (e.g., `blinky.debug+E7-HE`). These are automatically read from your solution's `*.csolution.yml` file.
+
+You can provide a partial name (e.g., `-p blinky`) to filter:
+- If a single match is found, it is automatically selected.
+- If multiple matches are found, the CLI will list all possible contexts for you to choose from interactively.
+
+---
+
+### `alif flash`
+**Programs the firmware to the device.**
+
+This command handles the end-to-end flashing process. It:
+1.  Verifies the build artifacts.
+2.  **Automatically creates the bootable image (TOC)** if missing or outdated.
+3.  Detects the connected Alif devkit via Serial/USB.
+4.  Programs the signed image to the device's MRAM.
+
+**Usage:**
 ```bash
-alif build -b E7-HE                    # Build for E7-HE target
-alif build -b blinky.debug+E7-HE      # Build specific context
+alif flash -p <project_name> [flags]
 ```
+- `-p, --project`: Specify the project to flash.
+- `--no-erase`: Skip the erase step (optional).
 
-The tool will:
-1. Compile using `cbuild`
-2. Sign the binary with `app-gen-toc`
-3. Save all artifacts in `out/<project>/<target>/<build-type>/`
+## Example Workflow
 
-### Flashing to Device
+The following visual guide demonstrates the workflow for building and flashing the **Blinky** project (from [Alif Samples](https://github.com/saleh-mehdikhani/alif_samples)) to an **AK-E7-AIML (HW: D3)** devkit.
 
-Connect your Alif devkit via USB and run:
+### 1. Build Completed
+Run `alif build -p blinky` to compile the project. The CLI resolves the context (e.g., `blinky.debug+E7-HE`) and generates the binary.
 
-```bash
-alif flash
-```
+![Build Completed](.img/build.png)
 
-The tool will:
-1. Auto-detect connected device
-2. Stage files to Alif Security Toolkit
-3. Flash firmware using `app-write-mram`
+### 2. Flashing Progress
+Run `alif flash -p blinky`. The tool checks for the bootable image (regenerating it if needed), connects to the device, and begins the flash operation.
 
-### Updating Configuration
+![Flash Progress](.img/flash_progress.png)
 
-Re-run setup at any time:
+### 3. Flash Successful
+Upon completion, the CLI confirms that the firmware has been successfully erased and programmed to the device.
 
-```bash
-alif setup
-```
-
-## Project Structure
-
-```
-alif-cli/
-├── main.go              # Entry point
-├── cmd/                 # Commands
-│   ├── root.go         # Root command
-│   ├── setup.go        # Setup command
-│   ├── build.go        # Build command
-│   └── flash.go        # Flash command
-├── internal/           # Internal packages
-│   ├── builder/        # Build logic
-│   ├── signer/         # Signing logic
-│   ├── flasher/        # Flashing logic
-│   ├── config/         # Configuration management
-│   └── project/        # Project validation
-├── go.mod              # Go module definition
-└── go.sum              # Dependency checksums
-```
-
-## Development
-
-### Running Tests
-
-```bash
-go test ./...
-```
-
-### Building for Specific Platforms
-
-**Cross-compile for Linux:**
-```bash
-GOOS=linux GOARCH=amd64 go build -o alif-linux
-```
-
-**Cross-compile for Windows:**
-```bash
-GOOS=windows GOARCH=amd64 go build -o alif.exe
-```
-
-**Cross-compile for macOS (Apple Silicon):**
-```bash
-GOOS=darwin GOARCH=arm64 go build -o alif-macos-arm64
-```
-
-### Adding Dependencies
-
-```bash
-go get <package>
-go mod tidy
-```
-
-## Troubleshooting
-
-### "no serial ports found"
-- Ensure your devkit is connected via USB
-- On Linux, you may need to add your user to the `dialout` group:
-  ```bash
-  sudo usermod -a -G dialout $USER
-  ```
-  Then log out and back in.
-
-### "cbuild: command not found"
-- Run `alif setup` to configure CMSIS Toolbox path
-- Ensure CMSIS Toolbox `bin` directory is specified correctly
-
-### "Signing failed"
-- Verify Alif Security Toolkit path is correct
-- Check that signing config exists in `<project>/.alif/<core>_cfg.json`
-
-### Build fails with "no solution file found"
-- Ensure you're running `alif build` from a directory containing a `*.csolution.yml` file
-
-## Configuration File
-
-Config is stored at `~/.alif/config.yaml`:
-
-```yaml
-alif_tools_path: /path/to/app-release-exec-macos
-cmsis_toolbox: /path/to/cmsis-toolbox/bin
-gcc_toolchain: /path/to/arm-gnu-toolchain/bin
-cmsis_pack_root: ~/.cache/arm/packs
-signing_key_path: /path/to/app-release-exec-macos/cert
-```
-
-## License
-
-[Add your license here]
-
-## Contributing
-
-Contributions are welcome! Please submit issues or pull requests.
-
-## Acknowledgments
-
-- Built for use with Alif Semiconductor devkits
-- Inspired by Zephyr's `west` tool
+![Flash Done](.img/flash.png)
