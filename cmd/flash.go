@@ -91,6 +91,23 @@ func runFlash(path string) {
 			os.Exit(1)
 		}
 
+		// --- Hardware Pre-Verification ---
+		f := flasher.New(cfg)
+
+		ui.Header("Flash Target")
+		port, err := f.SelectPort()
+		if err != nil {
+			ui.Error(fmt.Sprintf("Error identifying port: %v", err))
+			os.Exit(1)
+		}
+
+		// Update ISP Config so verification tools use the correct port
+		if flashMethod == "ISP" {
+			if err := f.UpdateISPConfig(port); err != nil {
+				ui.Warn(fmt.Sprintf("Failed to update ISP config: %v", err))
+			}
+		}
+
 		// 1. Copy binary to toolkit
 		configAbsPath, _ := filepath.Abs(resolvedConfigPath)
 		binBaseName := filepath.Base(binPath)
@@ -109,6 +126,14 @@ func runFlash(path string) {
 			ui.Warn(fmt.Sprintf("Toolkit sync failed: %v", err))
 		}
 
+		// Perform live verification
+		if flashMethod == "ISP" {
+			if err := targets.VerifyConnectedDevice(cfg.AlifToolsPath, resolvedConfig.GetCPU()); err != nil {
+				// VerifyConnectedDevice prints its own failure
+				os.Exit(1)
+			}
+		}
+
 		// 3. Run app-gen-toc
 		cmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-gen-toc"), "-f", configAbsPath)
 		cmd.Dir = cfg.AlifToolsPath
@@ -124,52 +149,7 @@ func runFlash(path string) {
 		}
 		sp.Succeed("TOC generated successfully")
 
-		// 3. Select port (handled later)
-
-		// 5. Run app-write-mram (handled by flasher later)
-		// Wait, binary mode runs logic inline in previous implementation?
-		// Previous implementation (Step 650) implemented Flashing INLINE for Binary Mode lines 135-156.
-		// lines 151: "flashCmd := exec.Command..."
-		// But Project Mode calls `f.Flash`.
-		// I should UNIFY this. `f.Flash` does flashing.
-		// Binary mode just prepares artifacts.
-		// But formatting is different.
-		// I'll keep Binary Mode separate for now but use `ui`.
-
-		// Select Port
-		f := flasher.New(cfg)
-		ui.Header("Flash Target")
-		port, err := f.SelectPort()
-		if err != nil {
-			ui.Error(fmt.Sprintf("Port selection failed: %v", err))
-			os.Exit(1)
-		}
-
-		// Update ISP Config
-		// Assuming flasher exposes updateISPConfig? No, it's private.
-		// Binary Mode logic duplicated private logic. Ideally I should expose it or make `f.Flash` usable.
-		// `f.Flash` takes `binPath, tocPath...`.
-		// The `binPath` here is `toolkitBinPath` (raw binary copied to toolkit).
-		// Wait, `f.Flash` logic stages binary.
-		// If I use `f.Flash` for Binary Mode, it expects artifacts in `buildDir` (workingDir).
-		// `runFlash` (Binary Mode) sets `workingDir` to `filepath.Dir(binPath)`.
-		// But in Binary Mode, we generated TOC in `cfg.AlifToolsPath`. We didn't copy it back to `workingDir`.
-		// So `f.Flash` won't find it in `workingDir`.
-		// I should stick to inline implementation for Binary Mode or refactor deeper.
-		// Given constraint, I'll update inline implementation to use `ui` and `flasher` helpers where possible.
-
-		// Update ISP com port logic (inline)
-		ispConfigPath := filepath.Join(cfg.AlifToolsPath, "isp_config_data.cfg")
-		content, _ := os.ReadFile(ispConfigPath)
-		lines := strings.Split(string(content), "\n")
-		for i, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), "comport") {
-				lines[i] = fmt.Sprintf("comport %s", port)
-				break
-			}
-		}
-		os.WriteFile(ispConfigPath, []byte(strings.Join(lines, "\n")), 0644)
-
+		// 4. Flash
 		cmdFlash := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-write-mram"), "-p")
 		cmdFlash.Dir = cfg.AlifToolsPath
 		var outFlash bytes.Buffer
@@ -285,12 +265,34 @@ func runFlash(path string) {
 		tocPath = filepath.Join(binDir, "AppTocPackage.bin")
 		workingDir = binDir
 
-		// Check if Image update needed
-		// We use ResolveTargetConfig implicitly inside SignArtifact mostly, but here we check status first.
+		// --- Hardware Pre-Verification ---
+		f := flasher.New(cfg)
+
+		ui.Header("Flash Target")
+		port, err := f.SelectPort()
+		if err != nil {
+			ui.Error(fmt.Sprintf("Error identifying port: %v", err))
+			os.Exit(1)
+		}
+
+		// Update ISP Config so verification tools use the correct port
+		if flashMethod == "ISP" {
+			if err := f.UpdateISPConfig(port); err != nil {
+				ui.Warn(fmt.Sprintf("Failed to update ISP config: %v", err))
+			}
+		}
 
 		// 2. Sync Toolkit Config
 		if err := targets.SyncToolkitConfig(cfg.AlifToolsPath, targetCore); err != nil {
 			ui.Warn(fmt.Sprintf("Toolkit sync failed: %v", err))
+		}
+
+		// Perform live verification (User wants this after toolkit sync logs)
+		if flashMethod == "ISP" {
+			if err := targets.VerifyConnectedDevice(cfg.AlifToolsPath, targetCore); err != nil {
+				// VerifyConnectedDevice prints its own failure
+				os.Exit(1)
+			}
 		}
 
 		// 3. Create Image (Pack/Sign) with Hints. We always run this to ensure
@@ -301,23 +303,12 @@ func runFlash(path string) {
 			ui.Error(fmt.Sprintf("Failed to create bootable image: %v", err))
 			os.Exit(1)
 		}
-	}
 
-	// 3. Flasher Setup
-	f := flasher.New(cfg)
-
-	ui.Header("Flash Target")
-	port, err := f.SelectPort()
-	if err != nil {
-		ui.Error(fmt.Sprintf("Error identifying port: %v", err))
-		os.Exit(1)
+		// 4. Flash
+		if err := f.Flash(signedBinPath, tocPath, port, targetCore, flashConfig, flashSlow, flashMethod, flashVerbose, flashNoErase); err != nil {
+			ui.Error(fmt.Sprintf("Flash failed: %v", err))
+			os.Exit(1)
+		}
+		return
 	}
-
-	// 5. Flash
-	// f.Flash handles spinner
-	if err := f.Flash(signedBinPath, tocPath, port, targetCore, flashConfig, flashSlow, flashMethod, flashVerbose, flashNoErase); err != nil {
-		ui.Error(fmt.Sprintf("Flash failed: %v", err))
-		os.Exit(1)
-	}
-	// f.Flash prints success spinner
 }

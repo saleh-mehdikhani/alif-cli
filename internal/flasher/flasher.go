@@ -82,7 +82,7 @@ func (f *Flasher) SelectPort() (string, error) {
 	return selectedPort, nil
 }
 
-func (f *Flasher) updateISPConfig(port string) error {
+func (f *Flasher) UpdateISPConfig(port string) error {
 	configPath := filepath.Join(f.Cfg.AlifToolsPath, "isp_config_data.cfg")
 	content, err := os.ReadFile(configPath)
 
@@ -230,7 +230,7 @@ func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwi
 
 	// 3. Update ISP config
 	if method == "ISP" {
-		if err := f.updateISPConfig(port); err != nil {
+		if err := f.UpdateISPConfig(port); err != nil {
 			return fmt.Errorf("failed to update ISP config: %w", err)
 		}
 	}

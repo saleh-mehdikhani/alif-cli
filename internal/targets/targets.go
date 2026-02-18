@@ -1,10 +1,14 @@
 package targets
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"alif-cli/internal/ui"
@@ -274,4 +278,81 @@ func SyncToolkitConfig(alifToolsPath string, targetID string) error {
 	}
 
 	return os.WriteFile(globalCfgPath, newCfgBytes, 0644)
+}
+
+// VerifyConnectedDevice probes the hardware and compares it with the expected ID
+func VerifyConnectedDevice(alifToolsPath string, expectedID string) error {
+	if alifToolsPath == "" || expectedID == "" {
+		return nil
+	}
+
+	// 1. Run maintenance tool to get revision info
+	// We use the menu sequence: 2 (Device Info) -> 5 (Get Revision Info) -> Enter -> Enter
+	toolPath := filepath.Join(alifToolsPath, "maintenance")
+	cmd := exec.Command(toolPath)
+	cmd.Dir = alifToolsPath
+	cmd.Stdin = strings.NewReader("2\n5\n\n\n")
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	sp := ui.StartSpinner("Verifying connected hardware...")
+	if err := cmd.Run(); err != nil {
+		sp.Fail("Hardware probe failed")
+		return fmt.Errorf("could not communicate with board: %w", err)
+	}
+
+	// 2. Parse output for ALIF_PN and Version
+	// Strip ANSI escape codes first (maintenance tool uses colors)
+	ansiRegex := `\x1b\[[0-9;]*[a-zA-Z]`
+	outStr := output.String()
+	// Replace ANSI codes with empty string
+	cleanOut := outStr
+	if re, err := regexp.Compile(ansiRegex); err == nil {
+		cleanOut = re.ReplaceAllString(outStr, "")
+	}
+
+	var actualPN, actualRev string
+	scanner := bufio.NewScanner(strings.NewReader(cleanOut))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "ALIF_PN") {
+			parts := strings.Split(line, "=")
+			if len(parts) > 1 {
+				actualPN = strings.TrimSpace(parts[1])
+			}
+		}
+		if strings.Contains(line, "Version") {
+			parts := strings.Split(line, "=")
+			if len(parts) > 1 {
+				hexVal := strings.TrimSpace(parts[1])
+				// 0xB400 -> B4
+				// We expect something like 0xXXXX
+				if strings.HasPrefix(hexVal, "0x") && len(hexVal) >= 4 {
+					actualRev = hexVal[2:4]
+				} else if len(hexVal) >= 2 {
+					actualRev = hexVal[:2]
+				}
+			}
+		}
+	}
+
+	if actualPN == "" {
+		sp.Fail("Verification failed")
+		return fmt.Errorf("target did not report its part number")
+	}
+
+	// 3. Compare with expected
+	expectedBase := strings.Split(expectedID, ":")[0]
+
+	if !strings.Contains(actualPN, expectedBase) {
+		sp.Fail("Hardware Mismatch!")
+		ui.Warn(fmt.Sprintf("Connected: %s (Rev %s)", actualPN, actualRev))
+		ui.Warn(fmt.Sprintf("Expected:  %s", expectedBase))
+		return fmt.Errorf("hardware mismatch")
+	}
+
+	sp.Succeed(fmt.Sprintf("Hardware Match: %s (Rev %s)", actualPN, actualRev))
+	return nil
 }
