@@ -53,6 +53,22 @@ alif flash -p <project_name> [flags]
 - `-m, --method`: Specify the connection method (`ISP` or `JTAG`).
 - `-v, --verbose`: Enable detailed log output.
 
+---
+
+### `alif recover`
+**Emergency hardware recovery via J-Link.**
+
+If a device becomes unresponsive (e.g., "Target did not respond" in ISP mode) due to firmware deadlock or corrupted boot signatures, use this command to clear the MRAM boot state.
+
+**Usage:**
+```bash
+alif recover
+```
+- It automatically searches for `JLinkDevices.xml` in your project or home folder.
+- If multiple devices are found, it presents an interactive selection list.
+- You can still override the selection using `-d <device_name>`.
+- After recovery, power cycle the board to enter ISP mode for fresh flashing.
+
 ## Example Workflow
 
 The following visual guide demonstrates the workflow for building and flashing the **Blinky** project (from [Alif Samples](https://github.com/saleh-mehdikhani/alif_samples)) to an **AK-E7-AIML (HW: D3)** devkit.
