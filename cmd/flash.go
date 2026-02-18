@@ -29,6 +29,7 @@ var flashMethod string
 var flashVerbose bool
 var flashNoErase bool
 var flashProject string
+var flashNoVerify bool
 
 var flashCmd = &cobra.Command{
 	Use:   "flash [binary_file]",
@@ -50,6 +51,8 @@ func init() {
 	flashCmd.Flags().BoolVarP(&flashVerbose, "verbose", "v", false, "Enable verbose output")
 	flashCmd.Flags().BoolVar(&flashNoErase, "no-erase", false, "Skip automatic erase before flashing")
 	flashCmd.Flags().StringVarP(&flashProject, "project", "p", "", "Project name or context filter")
+	flashCmd.Flags().BoolVar(&flashNoVerify, "no-verify", false, "Skip checking the connected hardware device")
+	flashCmd.Flags().BoolVar(&flashNoVerify, "nv", false, "Skip checking the connected hardware device (alias for --no-verify)")
 	rootCmd.AddCommand(flashCmd)
 }
 
@@ -127,7 +130,7 @@ func runFlash(path string) {
 		}
 
 		// Perform live verification
-		if flashMethod == "ISP" {
+		if flashMethod == "ISP" && !flashNoVerify {
 			if err := targets.VerifyConnectedDevice(cfg.AlifToolsPath, resolvedConfig.GetCPU()); err != nil {
 				// VerifyConnectedDevice prints its own failure
 				os.Exit(1)
@@ -288,7 +291,7 @@ func runFlash(path string) {
 		}
 
 		// Perform live verification (User wants this after toolkit sync logs)
-		if flashMethod == "ISP" {
+		if flashMethod == "ISP" && !flashNoVerify {
 			if err := targets.VerifyConnectedDevice(cfg.AlifToolsPath, targetCore); err != nil {
 				// VerifyConnectedDevice prints its own failure
 				os.Exit(1)
