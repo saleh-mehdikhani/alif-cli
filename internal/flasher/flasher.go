@@ -3,7 +3,6 @@ package flasher
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -86,16 +85,31 @@ func (f *Flasher) SelectPort() (string, error) {
 func (f *Flasher) updateISPConfig(port string) error {
 	configPath := filepath.Join(f.Cfg.AlifToolsPath, "isp_config_data.cfg")
 	content, err := os.ReadFile(configPath)
-	if err != nil {
+
+	if os.IsNotExist(err) {
+		// Create default config if missing
+		defaultConfig := fmt.Sprintf("comport %s\nbaudrate 115200\n", port)
+		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+			return fmt.Errorf("failed to create isp_config_data.cfg: %w", err)
+		}
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("failed to read isp_config_data.cfg: %w", err)
 	}
 
 	lines := strings.Split(string(content), "\n")
+	found := false
 	for i, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "comport") {
 			lines[i] = fmt.Sprintf("comport %s", port)
+			found = true
 			break
 		}
+	}
+
+	if !found {
+		// Append comport if not present in existing file
+		lines = append(lines, fmt.Sprintf("comport %s", port))
 	}
 
 	updated := strings.Join(lines, "\n")
@@ -105,41 +119,46 @@ func (f *Flasher) updateISPConfig(port string) error {
 	return nil
 }
 
-func (f *Flasher) flashViaJLink(binPath, tocPath, buildDir string) error {
+func (f *Flasher) flashViaJLink(binPath, tocPath, buildDir, device, scriptPathOverride string) error {
 	ui.Info("Using J-Link for JTAG flashing...")
-	// ... logic similar to before, strictly script generation ...
-	// Since JTAG is not primary focus and complicated to suppress interactive usage of JLinkExe?
-	// JLinkExe is usually interactive or script driven.
-	// For now, I'll allow JLink stdout to pass through if JTAG selected, or suppress.
-	// Suppressing JLink might hide important connectivity errors.
-	// But sticking to consistency: Suppress unless error.
 
-	// Default addrs
-	mramAddr := "0x80000000"
-	tocAddr := "0x8057f0f0"
+	// Resolve addrs from map file
+	mramAddr, err := f.resolveBinaryAddress(buildDir)
+	if err != nil {
+		return err
+	}
+	tocAddr, err := f.resolveTOCAddress(buildDir)
+	if err != nil {
+		return err
+	}
 
 	scriptPath := filepath.Join(buildDir, "flash_jlink.jlink")
 	scriptContent := fmt.Sprintf(`si SWD
 speed 4000
-device Cortex-M55
+device %s
 connect
 loadbin %s %s
 loadbin %s %s
 r
 g
 qc
-`, binPath, mramAddr, tocPath, tocAddr)
+`, device, binPath, mramAddr, tocPath, tocAddr)
 
 	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0644); err != nil {
 		return fmt.Errorf("failed to create J-Link script: %w", err)
 	}
 
-	cmd := exec.Command("JLinkExe", "-CommandFile", scriptPath)
+	args := []string{"-CommandFile", scriptPath}
+	if scriptPathOverride != "" {
+		args = append([]string{"-JLinkScriptFile", scriptPathOverride}, args...)
+	}
+
+	cmd := exec.Command("JLinkExe", args...)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	sp := ui.StartSpinner("Flashing via J-Link...")
+	sp := ui.StartSpinner(fmt.Sprintf("Flashing %s via J-Link...", device))
 	if err := cmd.Run(); err != nil {
 		sp.Fail("J-Link failed")
 		fmt.Println("\n" + output.String())
@@ -174,19 +193,13 @@ func (f *Flasher) eraseViaISP(verbose bool) error {
 }
 
 func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwitch bool, method string, verbose bool, noErase bool) error {
-	// 0. Update Flash Script based on config or target
-	if err := f.updateScript(target, configPath); err != nil {
-		return fmt.Errorf("failed to update flash script: %w", err)
-	}
-
 	buildDir := filepath.Dir(binPath)
 
 	ui.Item("Method", method)
 	// ui.Item("Port", port) // Already printed by SelectPort? No, SelectPort called before.
 	// If caller prints header, we print items.
 
-	// 1. Stage Image
-	// Simple copy, silent
+	// 1. Stage Image inside toolkit (bundled Python in app-write-mram needs files in toolkit)
 	imagesDir := filepath.Join(f.Cfg.AlifToolsPath, "build", "images")
 	_ = os.MkdirAll(imagesDir, 0755)
 	imageFiles := []string{"alif-img.bin", "alif-img.bin.sign", "alif-img.bin.crt"}
@@ -198,13 +211,20 @@ func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwi
 		}
 	}
 
-	// 2. Stage TOC
+	// 2. Stage TOC to root and build/ directory (different tools expect different locations)
 	tocFiles := []string{"AppTocPackage.bin", "AppTocPackage.bin.sign", "AppTocPackage.bin.crt"}
+	buildDestDir := filepath.Join(f.Cfg.AlifToolsPath, "build")
 	for _, fname := range tocFiles {
 		src := filepath.Join(buildDir, fname)
-		dst := filepath.Join(f.Cfg.AlifToolsPath, "build", fname)
+		// Stage to root
+		dstRoot := filepath.Join(f.Cfg.AlifToolsPath, fname)
 		if _, err := os.Stat(src); err == nil {
-			_ = copyFile(src, dst)
+			_ = copyFile(src, dstRoot)
+		}
+		// Stage to build/
+		dstBuild := filepath.Join(buildDestDir, fname)
+		if _, err := os.Stat(src); err == nil {
+			_ = copyFile(src, dstBuild)
 		}
 	}
 
@@ -215,19 +235,13 @@ func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwi
 		}
 	}
 
-	// 4. Erase
-	if !noErase && method == "ISP" { // Only ISP erase implemented cleanly
-		if err := f.eraseViaISP(verbose); err != nil {
-			// warning logged inside
-		}
-	}
-
 	// 5. Flash
 	if method == "JTAG" {
-		return f.flashViaJLink(binPath, tocPath, buildDir)
+		device, script := f.resolveJLinkConfig(buildDir, target)
+		return f.flashViaJLink(binPath, tocPath, buildDir, device, script)
 	}
 
-	// ISP Flash
+	// 4. Flash (app-write-mram uses the script located in bin/application_package.ds)
 	args := []string{"-p"}
 	if noSwitch {
 		args = append(args, "-s")
@@ -252,52 +266,111 @@ func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwi
 	return nil
 }
 
-func (f *Flasher) updateScript(target, configPath string) error {
-	scriptPath := filepath.Join(f.Cfg.AlifToolsPath, "bin", "application_package.ds")
-	content, err := os.ReadFile(scriptPath)
-	if err != nil {
-		return err
+func (f *Flasher) resolveJLinkConfig(buildDir, target string) (string, string) {
+	device := "Cortex-M55"
+	script := ""
+
+	// Find project root (look for .alif)
+	curr := buildDir
+	var alifDir string
+	for curr != "/" && curr != "." {
+		info, err := os.Stat(filepath.Join(curr, ".alif"))
+		if err == nil && info.IsDir() {
+			alifDir = filepath.Join(curr, ".alif")
+			break
+		}
+		curr = filepath.Dir(curr)
 	}
 
-	appAddr := "0x80000000" // Default HE
+	if alifDir == "" {
+		return device, script
+	}
 
-	if configPath != "" {
-		cfgBytes, err := os.ReadFile(configPath)
-		if err == nil {
-			var cfg map[string]interface{}
-			if err := json.Unmarshal(cfgBytes, &cfg); err == nil {
-				found := false
-				for _, v := range cfg {
-					if sub, ok := v.(map[string]interface{}); ok {
-						if addr, exists := sub["mramAddress"]; exists {
-							appAddr = fmt.Sprintf("%v", addr)
-							found = true
-							break
-						}
+	xmlPath := filepath.Join(alifDir, "JLinkDevices.xml")
+	xmlContent, err := os.ReadFile(xmlPath)
+	if err == nil {
+		// Normalize target (AE722F80F55D5LS:M55_HE -> AE722F80F55D5LS_M55_HE)
+		normTarget := strings.ReplaceAll(target, ":", "_")
+
+		// Scan lines for Aliases containing normTarget
+		scanner := bufio.NewScanner(bytes.NewReader(xmlContent))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, normTarget) {
+				// Try to extract Name
+				if parts := strings.Split(line, "Name=\""); len(parts) > 1 {
+					name := strings.Split(parts[1], "\"")[0]
+					if name != "" {
+						device = name
 					}
 				}
-				if !found {
-					// Silent fallback logic
+				// Try to extract Script File
+				if parts := strings.Split(line, "JLinkScriptFile=\""); len(parts) > 1 {
+					scriptName := strings.Split(parts[1], "\"")[0]
+					if scriptName != "" {
+						script = filepath.Join(alifDir, scriptName)
+					}
+				}
+				break
+			}
+		}
+	}
+
+	return device, script
+}
+
+func (f *Flasher) resolveBinaryAddress(buildDir string) (string, error) {
+	mapPath := filepath.Join(buildDir, "app-package-map.txt")
+	// Fallback to toolkit build dir if not in project build dir
+	if _, err := os.Stat(mapPath); err != nil {
+		mapPath = filepath.Join(f.Cfg.AlifToolsPath, "build", "app-package-map.txt")
+	}
+
+	content, err := os.ReadFile(mapPath)
+	if err != nil {
+		return "", fmt.Errorf("could not find package map file (app-package-map.txt). Please ensure the project is built correctly")
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "alif-img.bin") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				return fields[0], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("failed to extract binary MRAM address from package map. Please check the content of %s", mapPath)
+}
+
+func (f *Flasher) resolveTOCAddress(buildDir string) (string, error) {
+	mapPath := filepath.Join(buildDir, "app-package-map.txt")
+	// Fallback to toolkit build dir if not in project build dir
+	if _, err := os.Stat(mapPath); err != nil {
+		mapPath = filepath.Join(f.Cfg.AlifToolsPath, "build", "app-package-map.txt")
+	}
+
+	mapContent, err := os.ReadFile(mapPath)
+	if err != nil {
+		return "", fmt.Errorf("could not find package map file (app-package-map.txt) in build directory. Please ensure the project is built correctly")
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(mapContent))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "APP Package Start Address:") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				addr := strings.TrimSpace(parts[1])
+				if addr != "" {
+					return addr, nil
 				}
 			}
 		}
 	}
 
-	if configPath == "" {
-		if strings.Contains(target, "HP") {
-			appAddr = "0x80200000"
-		}
-	}
-
-	tocAddr := "0x8057f0f0"
-	newLine := fmt.Sprintf("set semihosting args ../build/images/alif-img.bin %s ../AppTocPackage.bin %s", appAddr, tocAddr)
-
-	lines := strings.Split(string(content), "\n")
-	if len(lines) > 0 {
-		lines[0] = newLine
-	}
-
-	return os.WriteFile(scriptPath, []byte(strings.Join(lines, "\n")), 0644)
+	return "", fmt.Errorf("failed to extract TOC address from package map. Please check the content of %s", mapPath)
 }
 
 func copyFile(src, dst string) error {

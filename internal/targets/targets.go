@@ -162,3 +162,116 @@ func ResolveTargetConfig(explicitPath string, searchRoot string, coreHint, proje
 
 	return finalConfig, resolvedPath, nil
 }
+
+// SyncToolkitConfig updates the toolkit's global configuration to match the project's target device
+func SyncToolkitConfig(alifToolsPath string, targetID string) error {
+	if alifToolsPath == "" || targetID == "" {
+		return nil
+	}
+
+	// 1. Resolve the full Part# string from devicesDB.db
+	devicesDBPath := filepath.Join(alifToolsPath, "utils", "devicesDB.db")
+	dbBytes, err := os.ReadFile(devicesDBPath)
+	if err != nil {
+		return fmt.Errorf("failed to read devices database: %w", err)
+	}
+
+	var devices map[string]interface{}
+	if err := json.Unmarshal(dbBytes, &devices); err != nil {
+		return fmt.Errorf("failed to parse devices database: %w", err)
+	}
+
+	// Strip core suffix if present (e.g., AE722F80F55D5LS:M55_HE -> AE722F80F55D5LS)
+	id := strings.Split(targetID, ":")[0]
+	var fullPartName string
+	for key := range devices {
+		if strings.Contains(key, id) {
+			fullPartName = key
+			break
+		}
+	}
+
+	if fullPartName == "" {
+		// Log a debug message but don't error.
+		// A core name (like M55_HE) won't match a Part#, which is fine.
+		return nil
+	}
+
+	// 2. Load global-cfg.db
+	globalCfgPath := filepath.Join(alifToolsPath, "utils", "global-cfg.db")
+	cfgBytes, err := os.ReadFile(globalCfgPath)
+	if err != nil {
+		return fmt.Errorf("failed to read toolkit global config: %w", err)
+	}
+
+	var globalCfg map[string]map[string]interface{}
+	if err := json.Unmarshal(cfgBytes, &globalCfg); err != nil {
+		return fmt.Errorf("failed to parse toolkit global config: %w", err)
+	}
+
+	if globalCfg["DEVICE"] == nil {
+		globalCfg["DEVICE"] = make(map[string]interface{})
+	}
+
+	// 3. Resolve valid revisions for this device
+	deviceInfo, _ := devices[fullPartName].(map[string]interface{})
+	featureSet, _ := deviceInfo["featureSet"].(string)
+
+	validRev := ""
+	featuresDBPath := filepath.Join(alifToolsPath, "utils", "featuresDB.db")
+	if fdbBytes, err := os.ReadFile(featuresDBPath); err == nil {
+		var features map[string]interface{}
+		if err := json.Unmarshal(fdbBytes, &features); err == nil {
+			if feat, ok := features[featureSet].(map[string]interface{}); ok {
+				if revs, ok := feat["revisions"].([]interface{}); ok && len(revs) > 0 {
+					currentRev, _ := globalCfg["DEVICE"]["Revision"].(string)
+					// Check if current is valid
+					for _, r := range revs {
+						if r.(string) == currentRev {
+							validRev = currentRev
+							break
+						}
+					}
+					// If not valid, pick the first one
+					if validRev == "" {
+						validRev = revs[0].(string)
+					}
+				}
+			}
+		}
+	}
+
+	// Default to A0 if we couldn't find anything in DBs (fallback)
+	if validRev == "" {
+		validRev = "A0"
+	}
+
+	// 4. Update and check if actual changes are needed
+	needsUpdate := false
+	if globalCfg["DEVICE"]["Part#"] != fullPartName {
+		ui.Item("Toolkit Sync", fmt.Sprintf("Part# → %s", id))
+		globalCfg["DEVICE"]["Part#"] = fullPartName
+		needsUpdate = true
+	} else {
+		ui.Item("Toolkit Target", id)
+	}
+
+	if globalCfg["DEVICE"]["Revision"] != validRev {
+		ui.Item("Toolkit Sync", fmt.Sprintf("Rev → %s", validRev))
+		globalCfg["DEVICE"]["Revision"] = validRev
+		needsUpdate = true
+	} else {
+		ui.Item("Toolkit Rev", validRev)
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	newCfgBytes, err := json.MarshalIndent(globalCfg, "", "    ")
+	if err != nil {
+		return fmt.Errorf("failed to encode toolkit global config: %w", err)
+	}
+
+	return os.WriteFile(globalCfgPath, newCfgBytes, 0644)
+}

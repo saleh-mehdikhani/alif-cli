@@ -85,7 +85,7 @@ func runFlash(path string) {
 		workingDir = filepath.Dir(binPath)
 
 		// 0. Retrieve configuration
-		_, resolvedConfigPath, err := targets.ResolveTargetConfig(flashConfig, workingDir, "", "")
+		resolvedConfig, resolvedConfigPath, err := targets.ResolveTargetConfig(flashConfig, workingDir, "", "")
 		if err != nil {
 			ui.Error(fmt.Sprintf("Configuration error: %v", err))
 			os.Exit(1)
@@ -104,7 +104,12 @@ func runFlash(path string) {
 		srcFile.Close()
 		dstFile.Close()
 
-		// 2. Run app-gen-toc
+		// 2. Sync Toolkit Config
+		if err = targets.SyncToolkitConfig(cfg.AlifToolsPath, resolvedConfig.GetCPU()); err != nil {
+			ui.Warn(fmt.Sprintf("Toolkit sync failed: %v", err))
+		}
+
+		// 3. Run app-gen-toc
 		cmd := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-gen-toc"), "-f", configAbsPath)
 		cmd.Dir = cfg.AlifToolsPath
 		var output bytes.Buffer
@@ -242,6 +247,13 @@ func runFlash(path string) {
 			coreHint = parts[len(parts)-1]
 		}
 
+		// Extract Full Part Number for dynamic resolution
+		targetCore = coreHint
+		deviceParts := strings.Split(deviceStr, "::")
+		if len(deviceParts) > 1 {
+			targetCore = deviceParts[1] // e.g. AE722F80F55D5LS:M55_HE
+		}
+
 		projectHint := flashProject
 		if projectHint == "" {
 			if idx := strings.Index(selectedContext, "."); idx != -1 {
@@ -273,38 +285,21 @@ func runFlash(path string) {
 		tocPath = filepath.Join(binDir, "AppTocPackage.bin")
 		workingDir = binDir
 
-		targetCore = coreHint
-
 		// Check if Image update needed
 		// We use ResolveTargetConfig implicitly inside SignArtifact mostly, but here we check status first.
 
-		ui.Header("Check Bootable Image")
-		needImage := false
-		if _, err := os.Stat(tocPath); os.IsNotExist(err) {
-			needImage = true
-			ui.Item("Status", "Missing (Creation Required)")
-		} else {
-			binInfo, err1 := os.Stat(binPath)
-			tocInfo, err2 := os.Stat(tocPath)
-			if err1 == nil && err2 == nil {
-				if binInfo.ModTime().After(tocInfo.ModTime()) {
-					needImage = true
-					ui.Item("Status", "Stale (Update Required)")
-				} else {
-					ui.Item("Status", "Up to date")
-				}
-			}
+		// 2. Sync Toolkit Config
+		if err := targets.SyncToolkitConfig(cfg.AlifToolsPath, targetCore); err != nil {
+			ui.Warn(fmt.Sprintf("Toolkit sync failed: %v", err))
 		}
 
-		if needImage {
-			s := signer.New(cfg)
-			// Create Image (Pack/Sign) with Hints
-			// Signer prints its own header
-			_, err = s.SignArtifact(solDir, binDir, binPath, coreHint, projectHint, flashConfig)
-			if err != nil {
-				ui.Error(fmt.Sprintf("Failed to create bootable image: %v", err))
-				os.Exit(1)
-			}
+		// 3. Create Image (Pack/Sign) with Hints. We always run this to ensure
+		// all artifacts and side-effects (like .ds script updates) are applied.
+		s := signer.New(cfg)
+		_, err = s.SignArtifact(solDir, binDir, binPath, coreHint, projectHint, flashConfig)
+		if err != nil {
+			ui.Error(fmt.Sprintf("Failed to create bootable image: %v", err))
+			os.Exit(1)
 		}
 	}
 

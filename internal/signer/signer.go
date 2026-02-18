@@ -27,10 +27,14 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 	ui.Header("Create Bootable Image")
 
 	// Use ResolveTargetConfig to find the config file with hints
-	// ResolveTargetConfig handles its own UI items (Config Selection)
-	_, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir, coreHint, projectHint)
+	resolvedCfg, srcCfg, err := targets.ResolveTargetConfig(configPathOverride, projectDir, coreHint, projectHint)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve signing config: %w", err)
+	}
+
+	// Sync Toolkit Config to match the detected device
+	if err := targets.SyncToolkitConfig(s.Cfg.AlifToolsPath, resolvedCfg.GetCPU()); err != nil {
+		ui.Warn(fmt.Sprintf("Toolkit sync failed: %v", err))
 	}
 
 	// 1. Load Config (to find 'binary' path mapping)
@@ -44,39 +48,68 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 		return "", fmt.Errorf("failed to parse signing config: %w", err)
 	}
 
-	// 2. Find the binary path in config and copy binary to that location
+	// 2. Find the application binary path in config (prioritize USER_APP or entries with mramAddress)
 	var binaryPathInConfig string
-	for _, v := range cfg {
-		if sub, ok := v.(map[string]interface{}); ok {
-			if binPath, exists := sub["binary"]; exists {
-				if binPathStr, ok := binPath.(string); ok {
-					binaryPathInConfig = binPathStr
-					break
+	if userApp, ok := cfg["USER_APP"].(map[string]interface{}); ok {
+		if bin, ok := userApp["binary"].(string); ok {
+			binaryPathInConfig = bin
+		}
+	}
+
+	if binaryPathInConfig == "" {
+		for k, v := range cfg {
+			if k == "DEVICE" {
+				continue
+			}
+			if sub, ok := v.(map[string]interface{}); ok {
+				if _, exists := sub["mramAddress"]; exists {
+					if bin, ok := sub["binary"].(string); ok {
+						binaryPathInConfig = bin
+						break
+					}
 				}
 			}
 		}
 	}
 
 	if binaryPathInConfig == "" {
-		return "", fmt.Errorf("could not find 'binary' field in config")
+		return "", fmt.Errorf("could not find application binary field in config")
 	}
 
-	// Copy binary to the path specified in config (relative to toolkit directory)
-	toolkitBinPath := filepath.Join(s.Cfg.AlifToolsPath, binaryPathInConfig)
-	ui.Item("Staging", filepath.Base(toolkitBinPath))
-
-	if err := os.MkdirAll(filepath.Dir(toolkitBinPath), 0755); err != nil {
+	// Double Staging: app-gen-toc is picky about locations.
+	// 1. Stage in toolkit root (legacy/internal reference)
+	rootDst := filepath.Join(s.Cfg.AlifToolsPath, binaryPathInConfig)
+	ui.Item("Staging", filepath.Base(rootDst))
+	if err := os.MkdirAll(filepath.Dir(rootDst), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for binary: %w", err)
 	}
-
-	_ = os.Remove(toolkitBinPath)
-	if err := copyFile(binaryPath, toolkitBinPath); err != nil {
-		return "", fmt.Errorf("failed to copy binary: %w", err)
+	_ = os.Remove(rootDst)
+	if err := copyFile(binaryPath, rootDst); err != nil {
+		return "", fmt.Errorf("failed to copy binary to root: %w", err)
 	}
 
-	// 3. Run tool from ROOT with original config (no patching needed)
+	// 2. Stage in build/images/ (required for newer tool versions/specific configs)
+	imagesDst := filepath.Join(s.Cfg.AlifToolsPath, "build", "images", binaryPathInConfig)
+	if imagesDst != rootDst {
+		if err := os.MkdirAll(filepath.Dir(imagesDst), 0755); err != nil {
+			return "", fmt.Errorf("failed to create build/images directory: %w", err)
+		}
+		_ = os.Remove(imagesDst)
+		if err := copyFile(binaryPath, imagesDst); err != nil {
+			return "", fmt.Errorf("failed to copy binary to build/images: %w", err)
+		}
+	}
+
+	// 3. Copy config to toolkit dir to ensure relative paths work (staging)
+	stagedCfgPath := filepath.Join(s.Cfg.AlifToolsPath, "staged_config.json")
+	if err := copyFile(srcCfg, stagedCfgPath); err != nil {
+		return "", fmt.Errorf("failed to stage config file: %w", err)
+	}
+	defer os.Remove(stagedCfgPath)
+
+	// 4. Run tool from ROOT with STAGED config
 	toolPath := filepath.Join(s.Cfg.AlifToolsPath, "app-gen-toc")
-	cmd := exec.Command(toolPath, "-f", srcCfg, "-o", "build/AppTocPackage.bin")
+	cmd := exec.Command(toolPath, "-f", "staged_config.json", "-o", "build/AppTocPackage.bin")
 	cmd.Dir = s.Cfg.AlifToolsPath
 
 	// Capture output
@@ -93,15 +126,14 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 	sp.Succeed("TOC generated successfully")
 
 	// 4. Retrieve ALL generated artifacts back to Project buildDir
-	// ui.Info("Retrieving artifacts...")
-
 	artifacts := []struct{ src, dst string }{
+		{filepath.Join(s.Cfg.AlifToolsPath, "build", "app-package-map.txt"), filepath.Join(buildDir, "app-package-map.txt")},
 		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin"), filepath.Join(buildDir, "AppTocPackage.bin")},
 		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin.sign"), filepath.Join(buildDir, "AppTocPackage.bin.sign")},
 		{filepath.Join(s.Cfg.AlifToolsPath, "build", "AppTocPackage.bin.crt"), filepath.Join(buildDir, "AppTocPackage.bin.crt")},
-		{toolkitBinPath + ".sign", filepath.Join(buildDir, "alif-img.bin.sign")},
-		{toolkitBinPath + ".crt", filepath.Join(buildDir, "alif-img.bin.crt")},
-		{toolkitBinPath, filepath.Join(buildDir, "alif-img.bin")},
+		{rootDst + ".sign", filepath.Join(buildDir, "alif-img.bin.sign")},
+		{rootDst + ".crt", filepath.Join(buildDir, "alif-img.bin.crt")},
+		{rootDst, filepath.Join(buildDir, "alif-img.bin")},
 	}
 
 	for _, a := range artifacts {
@@ -116,8 +148,6 @@ func (s *Signer) SignArtifact(projectDir, buildDir, binaryPath string, coreHint,
 
 	// Report result
 	finalToc := filepath.Join(buildDir, "AppTocPackage.bin")
-	// ui.Item("Output", filepath.Base(finalToc))
-
 	return finalToc, nil
 }
 

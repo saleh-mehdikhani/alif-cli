@@ -12,6 +12,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	setupCmsis string
+	setupGcc   string
+	setupCheck bool
+)
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure Alif CLI tool paths",
@@ -22,16 +28,44 @@ var setupCmd = &cobra.Command{
 }
 
 func init() {
+	setupCmd.Flags().StringVar(&setupCmsis, "cmsis", "", "Set path to CMSIS Toolbox bin directory")
+	setupCmd.Flags().StringVar(&setupGcc, "gcc", "", "Set path to GCC Toolchain bin directory")
+	setupCmd.Flags().BoolVar(&setupCheck, "check", false, "Verify current configuration")
 	rootCmd.AddCommand(setupCmd)
 }
 
 func runSetup() {
-	fmt.Println("Running Alif CLI Setup...")
-
 	cfg, _ := config.LoadConfig() // Ignore error, start fresh if needed
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+
+	// Mode 1: Check Configuration
+	if setupCheck {
+		checkConfiguration(cfg)
+		return
+	}
+
+	// Mode 2: Set Specific Paths (Non-interactive)
+	if setupCmsis != "" || setupGcc != "" {
+		if setupCmsis != "" {
+			cfg.CmsisToolbox = setupCmsis
+			color.Success("CMSIS Toolbox path set to: %s", setupCmsis)
+		}
+		if setupGcc != "" {
+			cfg.GccToolchain = setupGcc
+			color.Success("GCC Toolchain path set to: %s", setupGcc)
+		}
+		// Save and exit
+		if err := config.SaveConfig(cfg); err != nil {
+			color.Error("Error saving config: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Mode 3: Interactive Wizard (Default)
+	fmt.Println("Running Alif CLI Setup...")
 
 	// 1. Detect Alif Security Toolkit
 	if cfg.AlifToolsPath == "" {
@@ -65,23 +99,73 @@ func runSetup() {
 		cfg.CmsisPackRoot = detectCmsisPacks()
 	}
 
-	// 5. Default Signing Key (Cert) Path
-	if cfg.SigningKeyPath == "" && cfg.AlifToolsPath != "" {
-		// Default to the toolkit's own cert folder
-		cfg.SigningKeyPath = filepath.Join(cfg.AlifToolsPath, "cert")
-	}
-
 	// Save
 	if err := config.SaveConfig(cfg); err != nil {
 		color.Error("Error saving config: %v", err)
 	} else {
 		color.Success("Configuration saved successfully!")
-		color.Info("Toolkit: %s", cfg.AlifToolsPath)
-		color.Info("CMSIS: %s", cfg.CmsisToolbox)
-		color.Info("GCC: %s", cfg.GccToolchain)
-		color.Info("Packs: %s", cfg.CmsisPackRoot)
-		color.Info("Keys: %s", cfg.SigningKeyPath)
+		printConfigSummary(cfg)
 	}
+}
+
+func checkConfiguration(cfg *config.Config) {
+	fmt.Println("Checking Alif CLI Configuration...")
+	fmt.Println("----------------------------------")
+
+	ok := true
+
+	// Check Toolkit
+	if cfg.AlifToolsPath == "" {
+		color.Error("✖ Alif Security Toolkit: Not Configured")
+		ok = false
+	} else if _, err := os.Stat(filepath.Join(cfg.AlifToolsPath, "app-write-mram")); err != nil {
+		color.Error("✖ Alif Security Toolkit: Invalid path (app-write-mram not found at %s)", cfg.AlifToolsPath)
+		ok = false
+	} else {
+		color.Success("✓ Alif Security Toolkit: OK")
+	}
+
+	// Check CMSIS
+	if cfg.CmsisToolbox == "" {
+		color.Error("✖ CMSIS Toolbox: Not Configured")
+		ok = false
+	} else if _, err := os.Stat(filepath.Join(cfg.CmsisToolbox, "cbuild")); err != nil {
+		color.Error("✖ CMSIS Toolbox: Invalid path (cbuild not found at %s)", cfg.CmsisToolbox)
+		ok = false
+	} else {
+		color.Success("✓ CMSIS Toolbox: OK")
+	}
+
+	// Check GCC
+	gccName := "arm-none-eabi-gcc"
+	if runtime.GOOS == "windows" {
+		gccName += ".exe"
+	}
+
+	if cfg.GccToolchain == "" {
+		color.Error("✖ GCC Toolchain: Not Configured")
+		ok = false
+	} else if _, err := os.Stat(filepath.Join(cfg.GccToolchain, gccName)); err != nil {
+		color.Error("✖ GCC Toolchain: Invalid path (%s not found at %s)", gccName, cfg.GccToolchain)
+		ok = false
+	} else {
+		color.Success("✓ GCC Toolchain: OK")
+	}
+
+	fmt.Println("----------------------------------")
+	if ok {
+		color.Success("Configuration is valid.")
+	} else {
+		color.Error("Configuration has errors. Run 'alif setup' to fix.")
+		os.Exit(1)
+	}
+}
+
+func printConfigSummary(cfg *config.Config) {
+	color.Info("Toolkit: %s", cfg.AlifToolsPath)
+	color.Info("CMSIS:   %s", cfg.CmsisToolbox)
+	color.Info("GCC:     %s", cfg.GccToolchain)
+	color.Info("Packs:   %s", cfg.CmsisPackRoot)
 }
 
 // getCommonSearchDirs returns platform-appropriate common installation directories
