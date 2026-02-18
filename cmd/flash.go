@@ -27,7 +27,7 @@ var flashConfig string
 var flashSlow bool
 var flashMethod string
 var flashVerbose bool
-var flashNoErase bool
+var flashErase bool
 var flashProject string
 var flashNoVerify bool
 
@@ -49,7 +49,7 @@ func init() {
 	flashCmd.Flags().BoolVar(&flashSlow, "slow", false, "Disable dynamic baud rate switching (more stable)")
 	flashCmd.Flags().StringVarP(&flashMethod, "method", "m", "ISP", "Loading method (ISP or JTAG)")
 	flashCmd.Flags().BoolVarP(&flashVerbose, "verbose", "v", false, "Enable verbose output")
-	flashCmd.Flags().BoolVar(&flashNoErase, "no-erase", false, "Skip automatic erase before flashing")
+	flashCmd.Flags().BoolVarP(&flashErase, "erase", "e", false, "Erase the target device application area before flashing")
 	flashCmd.Flags().StringVarP(&flashProject, "project", "p", "", "Project name or context filter")
 	flashCmd.Flags().BoolVar(&flashNoVerify, "no-verify", false, "Skip checking the connected hardware device")
 	flashCmd.Flags().BoolVar(&flashNoVerify, "nv", false, "Skip checking the connected hardware device (alias for --no-verify)")
@@ -152,7 +152,14 @@ func runFlash(path string) {
 		}
 		sp.Succeed("TOC generated successfully")
 
-		// 4. Flash
+		// 4. Erase if requested
+		if flashErase {
+			if err := f.EraseViaISP(flashVerbose); err != nil {
+				ui.Warn(fmt.Sprintf("Erase failed: %v", err))
+			}
+		}
+
+		// 5. Flash
 		cmdFlash := exec.Command(filepath.Join(cfg.AlifToolsPath, "app-write-mram"), "-p")
 		cmdFlash.Dir = cfg.AlifToolsPath
 		var outFlash bytes.Buffer
@@ -308,7 +315,7 @@ func runFlash(path string) {
 		}
 
 		// 4. Flash
-		if err := f.Flash(signedBinPath, tocPath, port, targetCore, flashConfig, flashSlow, flashMethod, flashVerbose, flashNoErase); err != nil {
+		if err := f.Flash(signedBinPath, tocPath, port, targetCore, flashConfig, flashSlow, flashMethod, flashVerbose, flashErase); err != nil {
 			ui.Error(fmt.Sprintf("Flash failed: %v", err))
 			os.Exit(1)
 		}

@@ -168,7 +168,7 @@ qc
 	return nil
 }
 
-func (f *Flasher) eraseViaISP(verbose bool) error {
+func (f *Flasher) EraseViaISP(verbose bool) error {
 	args := []string{"-e", "APP"}
 	if verbose {
 		args = append(args, "-v")
@@ -192,7 +192,7 @@ func (f *Flasher) eraseViaISP(verbose bool) error {
 	return nil
 }
 
-func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwitch bool, method string, verbose bool, noErase bool) error {
+func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwitch bool, method string, verbose bool, doErase bool) error {
 	buildDir := filepath.Dir(binPath)
 
 	ui.Item("Method", method)
@@ -232,6 +232,14 @@ func (f *Flasher) Flash(binPath, tocPath, port, target, configPath string, noSwi
 	if method == "ISP" {
 		if err := f.UpdateISPConfig(port); err != nil {
 			return fmt.Errorf("failed to update ISP config: %w", err)
+		}
+
+		// 3b. Erase if requested
+		if doErase {
+			if err := f.EraseViaISP(verbose); err != nil {
+				// We warn but continue, as the -p command might still work if erase failed
+				ui.Warn(fmt.Sprintf("Automatic erase failed: %v", err))
+			}
 		}
 	}
 
