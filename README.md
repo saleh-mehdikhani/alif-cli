@@ -34,20 +34,24 @@ You can provide a partial name (e.g., `-p blinky`) to filter:
 ---
 
 ### `alif flash`
-**Programs the firmware to the device.**
+**Safety-first firmware programming.**
 
-This command handles the end-to-end flashing process. It:
-1.  Verifies the build artifacts.
-2.  **Automatically creates the bootable image (TOC)** if missing or outdated.
-3.  Detects the connected Alif devkit via Serial/USB.
-4.  Programs the signed image to the device's MRAM.
+This command handles the end-to-end flashing process with built-in hardware safety checks. It:
+1.  **Toolkit Synchronization**: Automatically configures the Alif Security Toolkit (`global-cfg.db`) to match your project's target Part Number and Revision.
+2.  **Live Hardware Verification**: Probes the connected board via the `maintenance` tool to retrieve the internal silicon ID.
+3.  **Fail-Fast Security**: Stops the process immediately if the connected hardware doesn't match the project target (e.g., trying to flash an E7 image to an E8 board).
+4.  **Bootable Image Generation**: Automatically creates or updates the signed bootable image (TOC) with correct memory addresses.
+5.  **Clean Programming**: Programs the signed image to the device's MRAM via ISP (serial) or JTAG.
 
 **Usage:**
 ```bash
 alif flash -p <project_name> [flags]
 ```
 - `-p, --project`: Specify the project to flash.
-- `--no-erase`: Skip the erase step (optional).
+- `-e, --erase`: Explicitly erase the device application area before writing (Default: No erase).
+- `--no-verify`, `--nv`: Skip the live hardware verification step.
+- `-m, --method`: Specify the connection method (`ISP` or `JTAG`).
+- `-v, --verbose`: Enable detailed log output.
 
 ## Example Workflow
 
@@ -58,12 +62,12 @@ Run `alif build -p blinky` to compile the project. The CLI resolves the context 
 
 ![Build Completed](.img/build.png)
 
-### 2. Flashing Progress
-Run `alif flash -p blinky`. The tool checks for the bootable image (regenerating it if needed), connects to the device, and begins the flash operation.
+### 2. Flashing & Verification
+Run `alif flash -p blinky`. The tool identifies the serial port, **probes the hardware** to ensure it matches the target (e.g., `AE722F80F55D5LS`), and synchronizes the toolkit settings. It then creates the bootable image and begins the flash operation.
 
 ![Flash Progress](.img/flash_progress.png)
 
 ### 3. Flash Successful
-Upon completion, the CLI confirms that the firmware has been successfully erased and programmed to the device.
+Upon completion, the CLI confirms that the firmware has been successfully programmed. If you used the `-e` flag, the device area was erased first.
 
 ![Flash Done](.img/flash.png)
